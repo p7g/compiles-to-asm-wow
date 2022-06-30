@@ -167,10 +167,9 @@ def xcompile(decls):
         ctx.emitln(b"	.globl	%s" % symbol_name)
         ctx.emitln(b"%s:" % symbol_name)
 
+        ctx.emitln(b"	pushq	%rbp")
+        ctx.emitln(b"	movq	%rsp, %rbp")
         # TODO: local variables
-
-        # pushq	%rbp
-        # movq	%rsp, %rbp
         # subq	$localssize, %rsp
 
         for stmt in decl.body:
@@ -178,9 +177,9 @@ def xcompile(decls):
 
         ctx.emitln(b"%s:" % end_label)
 
-        # TODO: function epilogue
+        # TODO: local variables
         # addq	$localssize, %rsp
-        # popq	%rbp
+        ctx.emitln(b"	popq	%rbp")
         ctx.emitln(b"	ret")
 
     if ctx.strings:
