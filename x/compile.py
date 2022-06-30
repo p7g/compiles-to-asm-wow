@@ -21,6 +21,10 @@ class IntType(Type):
         self.signed = signed
         self.from_literal = from_literal
 
+    def __str__(self):
+        bit_size = self.size << 3
+        return f"i{bit_size}" if self.signed else f"u{bit_size}"
+
 
 class PointerType(Type):
     def __init__(self, pointee):
@@ -28,12 +32,19 @@ class PointerType(Type):
         self.pointee = pointee
         self.size = 8
 
+    def __str__(self):
+        return f"*{self.pointee}"
+
 
 class FunctionType(Type):
     def __init__(self, params, ret):
         super().__init__()
         self.params = params
         self.ret = ret
+
+    def __str__(self):
+        params = ", ".join(map(str, self.params))
+        return f"function({params}): {self.ret}"
 
 
 def analyze_type(ctx, expr):
@@ -43,7 +54,7 @@ def analyze_type(ctx, expr):
         try:
             return ctx.declared_functions[expr.name].type
         except KeyError:
-            raise XTypeError(f"Function {expr.name} does not exist")
+            raise XTypeError(f"Function {expr.name!r} does not exist")
     elif isinstance(expr, parse.IntExpr):
         return IntType(4, signed=True, from_literal=True)
     elif isinstance(expr, parse.StringExpr):
@@ -53,10 +64,14 @@ def analyze_type(ctx, expr):
         if not isinstance(target_ty, FunctionType):
             raise XTypeError(f"Cannot call expression of type {target_ty}")
         if len(expr.args) != len(target_ty.params):
-            raise XTypeError(f"Incorrect number of arguments passed to {expr.target}")
+            # FIXME: assumes target is a NameExpr
+            raise XTypeError(
+                f"Incorrect number of arguments passed to {expr.target.name!r}"
+            )
         for param, arg in zip(target_ty.params, expr.args):
-            if not is_assignable(analyze_type(ctx, arg), param):
-                raise XTypeError(f"Cannot pass {arg} as {param}")
+            arg_ty = analyze_type(ctx, arg)
+            if not is_assignable(arg_ty, param):
+                raise XTypeError(f"Cannot pass {arg_ty} as {param}")
         return target_ty.ret
     else:
         raise NotImplementedError(expr)
@@ -197,7 +212,7 @@ def compile_type(ctx, ast_ty):
         try:
             return ctx.named_types[ast_ty.name]
         except KeyError:
-            raise XTypeError(f"Unknown type {ast_ty.name}")
+            raise XTypeError(f"Unknown type {ast_ty.name!r}")
     elif isinstance(ast_ty, parse.PointerTypeExpr):
         return PointerType(compile_type(ctx, ast_ty.pointee))
     else:
@@ -209,7 +224,7 @@ def compile_statement(ctx, func_meta, stmt):
         if stmt.expr:
             expr_ty = analyze_type(ctx, stmt.expr)
             if not is_assignable(expr_ty, func_meta.type.ret):
-                raise XTypeError(f"Cannot return {expr_ty!r} as {func_meta.type.ret!r}")
+                raise XTypeError(f"Cannot return {expr_ty} as {func_meta.type.ret}")
 
             dest = register.Address(register.a, size=expr_ty.size)
             compile_expr(ctx, stmt.expr, dest)

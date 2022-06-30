@@ -15,6 +15,7 @@ try:
     assembly = xcompile(parse(tokenize(text)))
 except ParseError as e:
     print(e, repr(text[max(e.pos - 10, 0) : e.pos + 10]))  # noqa E203
+    exit(1)
 
 if args.out == "-":
     sys.stdout.buffer.write(assembly)
