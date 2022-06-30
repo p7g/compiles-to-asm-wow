@@ -162,16 +162,25 @@ def xcompile(decls):
             continue
 
         symbol_name = global_name(func_meta.name)
+        # TODO: Functions static by default
+        ctx.emitln(b"")
         ctx.emitln(b"	.globl	%s" % symbol_name)
         ctx.emitln(b"%s:" % symbol_name)
 
         # TODO: local variables
 
+        # pushq	%rbp
+        # movq	%rsp, %rbp
+        # subq	$localssize, %rsp
+
         for stmt in decl.body:
             compile_statement(ctx, func_meta, stmt)
 
-        # TODO: function epilogue
         ctx.emitln(b"%s:" % end_label)
+
+        # TODO: function epilogue
+        # addq	$localssize, %rsp
+        # popq	%rbp
         ctx.emitln(b"	ret")
 
     if ctx.strings:
