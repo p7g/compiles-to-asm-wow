@@ -187,8 +187,7 @@ def xcompile(decls):
         ctx.emitln(b"	.section	__TEXT,__cstring")
 
     for label, string in ctx.strings:
-        ctx.emitln(b"%s:" % label)
-        ctx.emitln(b'	.asciz "%s"' % string.encode("utf-8"))
+        ctx.emitln(b'%s:	.asciz "%s"' % (label, string.encode("utf-8")))
 
     return opt.peephole_opt(ctx.asm)
 
