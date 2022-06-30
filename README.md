@@ -22,26 +22,29 @@ function main(argc: i32, argv: **u8): i32 {
 
 	.globl	_inner
 _inner:
+	pushq	%rbp
+	movq	%rsp, %rbp
 	leaq	L1(%rip), %rdi
 	call	_puts
 	leaq	L2(%rip), %rdi
 	call	_strlen
+	popq	%rbp
 	ret
 
 	.globl	_main
 _main:
+	pushq	%rbp
+	movq	%rsp, %rbp
 	leaq	L4(%rip), %rdi
 	call	_puts
 	call	_inner
+	popq	%rbp
 	ret
 
 	.section	__TEXT,__cstring
-L1:
-	.asciz "Testing"
-L2:
-	.asciz "wowowowow"
-L4:
-	.asciz "Hello, world!"
+L1:	.asciz "Testing"
+L2:	.asciz "wowowowow"
+L4:	.asciz "Hello, world!"
 ```
 
 # Notes
