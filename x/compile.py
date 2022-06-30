@@ -1,5 +1,5 @@
 from collections import namedtuple
-from x import parse, register
+from x import opt, parse, register
 from x.instr import mov, movs
 
 
@@ -191,7 +191,7 @@ def xcompile(decls):
         ctx.emitln(b"%s:" % label)
         ctx.emitln(b'	.asciz "%s"' % string.encode("utf-8"))
 
-    return ctx.asm
+    return opt.peephole_opt(ctx.asm)
 
 
 def compile_type(ctx, ast_ty):
