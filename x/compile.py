@@ -40,7 +40,10 @@ def analyze_type(ctx, expr):
     if isinstance(expr, parse.IdentExpr):
         # TODO local variables, or really any variables
         # TODO abstract over name resolution
-        return ctx.named_functions[expr.name]
+        try:
+            return ctx.declared_functions[expr.name].type
+        except KeyError:
+            raise XTypeError(f"Function {expr.name} does not exist")
     elif isinstance(expr, parse.IntExpr):
         return IntType(4, signed=True, from_literal=True)
     elif isinstance(expr, parse.StringExpr):
@@ -141,7 +144,6 @@ def xcompile(decls):
     ctx = ProgramContext()
 
     ctx.emitln(b"	.section	__TEXT,__text")
-    ctx.emitln(b"")
 
     for decl in decls:
         assert isinstance(decl, parse.FuncDecl)
