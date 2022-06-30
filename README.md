@@ -2,10 +2,11 @@
 
 ```ts
 declare function puts(str: *u8);
+declare function strlen(str: *u8): u32;
 
 function inner(): i32 {
     puts("Testing");
-    return 0;
+    return strlen("wowowowow");
 }
 
 function main(argc: i32, argv: **u8): i32 {
@@ -23,12 +24,13 @@ function main(argc: i32, argv: **u8): i32 {
 _inner:
 	leaq	L1(%rip), %rdi
 	call	_puts
-	xorl	%eax, %eax
+	leaq	L2(%rip), %rdi
+	call	_strlen
 	ret
 
 	.globl	_main
 _main:
-	leaq	L3(%rip), %rdi
+	leaq	L4(%rip), %rdi
 	call	_puts
 	call	_inner
 	ret
@@ -36,12 +38,14 @@ _main:
 	.section	__TEXT,__cstring
 L1:
 	.asciz "Testing"
-L3:
+L2:
+	.asciz "wowowowow"
+L4:
 	.asciz "Hello, world!"
 ```
 
 # Notes
 
-Use like `python -m x mycoolfile.x -o wheretheassemblygoes.s`
+Use like `python -mx mycoolfile.x -o wheretheassemblygoes.s`
 
 Mach-O is hard so it just compiles to an assembly text file, you can compile the code with `clang wheretheassemblygoes.s` and then run like `./a.out`
