@@ -276,14 +276,16 @@ def compile_expr(ctx, expr, dest):
 
         ctx.emitln(b"	call	%s" % global_name(func.name))
         if dest is not None:
-            ctx.emitln(
-                b"	%s	%s, %s"
-                % (
-                    mov(func.type.ret.size),
-                    register.Address(register.a, size=func.type.ret.size),
-                    dest,
+            retval_addr = register.Address(register.a, size=func.type.ret.size)
+            if dest != retval_addr:
+                ctx.emitln(
+                    b"	%s	%s, %s"
+                    % (
+                        mov(func.type.ret.size),
+                        retval_addr,
+                        dest,
+                    )
                 )
-            )
 
 
 def implicitly_cast(ctx, addr, from_ty, to_ty):

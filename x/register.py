@@ -165,3 +165,12 @@ class Address:
             return self.reg.name(self.size)
         else:
             return b"%s(%s)" % (self.offset, self.reg.name(self.size))
+
+    def __eq__(self, other):
+        if not isinstance(other, Address):
+            return NotImplemented
+        return (
+            self.reg is other.reg
+            and self.size == other.size
+            and self.offset == other.offset
+        )
