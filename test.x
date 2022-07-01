@@ -8,5 +8,6 @@ function inner(): i32 {
 
 function main(argc: i32, argv: **u8): i32 {
     puts("Hello, world!");
-    return inner();
+    var code = inner();
+    return code;
 }

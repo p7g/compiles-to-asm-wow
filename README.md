@@ -11,7 +11,8 @@ function inner(): i32 {
 
 function main(argc: i32, argv: **u8): i32 {
     puts("Hello, world!");
-    return inner();
+    var code = inner();
+    return code;
 }
 ```
 
@@ -28,6 +29,7 @@ _inner:
 	call	_puts
 	leaq	L2(%rip), %rdi
 	call	_strlen
+L0:
 	popq	%rbp
 	ret
 
@@ -35,9 +37,16 @@ _inner:
 _main:
 	pushq	%rbp
 	movq	%rsp, %rbp
+	subq	$32, %rsp
+	movl	%edi, -4(%rbp)
+	movq	%rsi, -16(%rbp)
 	leaq	L4(%rip), %rdi
 	call	_puts
 	call	_inner
+	movl	%eax, -20(%rbp)
+	movl	-20(%rbp), %eax
+L3:
+	addq	$32, %rsp
 	popq	%rbp
 	ret
 

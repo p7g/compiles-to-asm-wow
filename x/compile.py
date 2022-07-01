@@ -1,4 +1,4 @@
-from collections import namedtuple
+from collections import ChainMap
 from x import opt, parse, register
 from x.instr import mov, movs
 
@@ -49,12 +49,16 @@ class FunctionType(Type):
 
 def analyze_type(ctx, expr):
     if isinstance(expr, parse.IdentExpr):
-        # TODO local variables, or really any variables
         # TODO abstract over name resolution
+        try:
+            return ctx.func.resolve_variable(expr.name).type
+        except XTypeError:
+            pass
         try:
             return ctx.declared_functions[expr.name].type
         except KeyError:
-            raise XTypeError(f"Function {expr.name!r} does not exist")
+            pass
+        raise XTypeError(f"No variable named {expr.name!r} is in scope")
     elif isinstance(expr, parse.IntExpr):
         return IntType(4, signed=True, from_literal=True)
     elif isinstance(expr, parse.StringExpr):
@@ -130,10 +134,23 @@ class ProgramContext:
             "i64": IntType(8, signed=True),
             "u64": IntType(8, signed=False),
         }
-        self.asm = b""
+        self._asm_lines = []
+        self.func = None
 
-    def emitln(self, line):
-        self.asm += b"%s\n" % line
+    def emitln(self, line: bytes):
+        assert isinstance(line, bytes)
+        self._asm_lines.append(line)
+
+    def insertln(self, pos, line: bytes):
+        assert isinstance(line, bytes)
+        self._asm_lines.insert(pos, line)
+
+    def next_lineno(self):
+        return len(self._asm_lines)
+
+    @property
+    def asm(self):
+        return b"\n".join(self._asm_lines)
 
 
 class Label:
@@ -152,7 +169,58 @@ class Label:
         return b"L%s" % str(self.idx).encode("ascii")
 
 
-FuncMeta = namedtuple("FuncMeta", "name type end_label")
+class Variable:
+    def __init__(self, name, type_, stack_offset):
+        self.name = name
+        self.type = type_
+        self.stack_offset = stack_offset
+
+    @property
+    def addr(self):
+        return register.Address(
+            register.bp,
+            size=8,
+            offset=str(-self.stack_offset - self.type.size).encode("ascii"),
+        )
+
+
+def align(addr, alignment):
+    if addr % alignment == 0:
+        return addr
+    return addr + alignment - addr % alignment
+
+
+class FuncMeta:
+    def __init__(self, name, type_, end_label):
+        self.name = name
+        self.type = type_
+        self.end_label = end_label
+        self._scope = ChainMap()
+        self._next_stack_offset = 0
+
+    def enter_scope(self):
+        self._scope = self._scope.new_child()
+
+    def exit_scope(self):
+        self._scope = self._scope.parents
+
+    def declare_variable(self, name, type_):
+        if self._next_stack_offset:
+            align_to = 4 if type_.size <= 4 else 8 if 4 < type_.size <= 8 else 16
+            self._next_stack_offset = align(self._next_stack_offset, align_to)
+        var = Variable(name, type_, self._next_stack_offset)
+        self._next_stack_offset += type_.size
+        self._scope[name] = var
+        return var
+
+    def resolve_variable(self, name):
+        try:
+            return self._scope[name]
+        except KeyError:
+            raise XTypeError(f"No variable named {name!r}")
+
+    def __repr__(self):
+        return f"FuncMeta(name={self.name!r}, type={self.type!r}, end_label={self.end_label!r})"  # noqa E501
 
 
 def xcompile(decls):
@@ -169,6 +237,7 @@ def xcompile(decls):
         func_ty = FunctionType(params, ret)
         end_label = None if decl.is_proto else Label.create()
         func_meta = FuncMeta(decl.name.encode("ascii"), func_ty, end_label)
+        ctx.func = func_meta
 
         ctx.declared_functions[decl.name] = func_meta
 
@@ -184,18 +253,38 @@ def xcompile(decls):
 
         ctx.emitln(b"	pushq	%rbp")
         ctx.emitln(b"	movq	%rsp, %rbp")
-        # TODO: local variables
-        # subq	$localssize, %rsp
+        # The number of locals is only known after compiling the contents of
+        # the function so the instruction to allocate stack space is patched in
+        # after compiling the body.
+        allocate_stack_room = ctx.next_lineno()
+
+        # Move all the arguments to the stack
+        for param_ast, param_ty, arg_reg in zip(
+            decl.params, params, register.argument_registers
+        ):
+            var = func_meta.declare_variable(param_ast.name, param_ty)
+            ctx.emitln(
+                b"	%s	%s, %s"
+                % (
+                    mov(param_ty.size),
+                    register.Address(arg_reg, size=param_ty.size),
+                    var.addr,
+                )
+            )
 
         for stmt in decl.body:
-            compile_statement(ctx, func_meta, stmt)
+            compile_statement(ctx, stmt)
 
         ctx.emitln(b"%s:" % end_label)
 
-        # TODO: local variables
-        # addq	$localssize, %rsp
+        locals_size = register.Immediate(align(func_meta._next_stack_offset, 16))
+        # Patch in sub to reserve stack space for locals
+        ctx.insertln(allocate_stack_room, b"	subq	%s, %%rsp" % locals_size)
+        ctx.emitln(b"	addq	%s, %%rsp" % locals_size)
         ctx.emitln(b"	popq	%rbp")
         ctx.emitln(b"	ret")
+
+        ctx.func = None
 
     if ctx.strings:
         ctx.emitln(b"")
@@ -219,18 +308,27 @@ def compile_type(ctx, ast_ty):
         raise NotImplementedError(repr(ast_ty))
 
 
-def compile_statement(ctx, func_meta, stmt):
+def compile_statement(ctx, stmt):
     if isinstance(stmt, parse.ReturnStmt):
         if stmt.expr:
             expr_ty = analyze_type(ctx, stmt.expr)
-            if not is_assignable(expr_ty, func_meta.type.ret):
-                raise XTypeError(f"Cannot return {expr_ty} as {func_meta.type.ret}")
+            if not is_assignable(expr_ty, ctx.func.type.ret):
+                raise XTypeError(f"Cannot return {expr_ty} as {ctx.func.type.ret}")
 
             dest = register.Address(register.a, size=expr_ty.size)
             compile_expr(ctx, stmt.expr, dest)
-            implicitly_cast(ctx, dest, expr_ty, func_meta.type.ret)
+            implicitly_cast(ctx, dest, expr_ty, ctx.func.type.ret)
 
-        ctx.emitln(b"	jmp	%s" % func_meta.end_label)
+        ctx.emitln(b"	jmp	%s" % ctx.func.end_label)
+    elif isinstance(stmt, parse.VarDecl):
+        assert stmt.initializer or stmt.type
+        if stmt.type:
+            ty = compile_type(stmt.type)
+        elif stmt.initializer:
+            ty = analyze_type(ctx, stmt.initializer)
+        var = ctx.func.declare_variable(stmt.name, ty)
+        if stmt.initializer:
+            compile_expr(ctx, stmt.initializer, var.addr)
     elif isinstance(stmt, parse.ExprStmt):
         compile_expr(ctx, stmt.expr, None)
     else:
@@ -262,8 +360,19 @@ def compile_expr(ctx, expr, dest):
             )
         )
     elif isinstance(expr, parse.IdentExpr):
-        # TODO: Variables and stuff
-        raise NotImplementedError("variables")
+        var = ctx.func.resolve_variable(expr.name)
+        if dest != var.addr:
+            # FIXME: There should be some kinda move/cast operation
+            # FIXME: implicitly cast variable value to destination type if
+            # applicable
+            ctx.emitln(
+                b"	%s	%s, %s"
+                % (
+                    mov(var.type.size),
+                    var.addr,
+                    dest,
+                )
+            )
     elif isinstance(expr, parse.CallExpr):
         # TODO: Function pointers
         if not isinstance(expr.target, parse.IdentExpr):
@@ -276,8 +385,7 @@ def compile_expr(ctx, expr, dest):
         for dest_reg, param, arg in zip(
             register.argument_registers, func.type.params, expr.args
         ):
-            # FIXME: Avoid clobbering the arguments passed to the caller;
-            # perhaps put them on the stack until after this function is called?
+            # FIXME: implicitly cast arguments to parameter types if applicable
             compile_expr(
                 ctx,
                 arg,
