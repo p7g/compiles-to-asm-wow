@@ -1,6 +1,6 @@
 # vim: et
 
-from collections import namedtuple
+from collections import defaultdict, namedtuple
 from enum import Enum, auto
 
 Token = namedtuple("Token", "type pos text")
@@ -27,22 +27,29 @@ class Peekable:
 
 
 class T(Enum):
+    ANDAND = auto()
+    BANG = auto()
     COLON = auto()
     COMMA = auto()
     DECLARE = auto()
     ELLIPSIS = auto()
+    ELSE = auto()
     EQ = auto()
+    FALSE = auto()
     FUNCTION = auto()
     IDENT = auto()
+    IF = auto()
     INTEGER = auto()
     LBRACE = auto()
     LPAREN = auto()
+    OROR = auto()
     RBRACE = auto()
     RETURN = auto()
     RPAREN = auto()
     SEMICOLON = auto()
     STAR = auto()
     STRING = auto()
+    TRUE = auto()
     VAR = auto()
 
 
@@ -68,6 +75,7 @@ class ParamsAfterEllipsis(ParseError):
 
 
 _one_char = {
+    "!": T.BANG,
     "(": T.LPAREN,
     ")": T.RPAREN,
     "*": T.STAR,
@@ -80,8 +88,12 @@ _one_char = {
 
 _keywords = {
     "declare": T.DECLARE,
+    "else": T.ELSE,
+    "false": T.FALSE,
     "function": T.FUNCTION,
+    "if": T.IF,
     "return": T.RETURN,
+    "true": T.TRUE,
     "var": T.VAR,
 }
 
@@ -122,6 +134,16 @@ def tokenize(text):
             yield Token(T.ELLIPSIS, start, "...")
         elif c == "=":
             yield Token(T.EQ, start, c)
+        elif c == "&":
+            if peekchar() != "&":
+                raise UnexpectedToken(start, c)
+            c += nextchar()
+            yield Token(T.ANDAND, start, c)
+        elif c == "|":
+            if peekchar() != "|":
+                raise UnexpectedToken(start, c)
+            c += nextchar()
+            yield Token(T.OROR, start, c)
         elif c == '"':
             while peekchar() != '"':
                 c += nextchar()
@@ -193,8 +215,40 @@ class ReturnStmt(Stmt):
         return f"ReturnStmt({self.expr!r})"
 
 
+class IfStmt(Stmt):
+    def __init__(self, cond, then_body, else_body):
+        super().__init__()
+        self.cond = cond
+        self.then_body = then_body
+        self.else_body = else_body
+
+    def __repr__(self):
+        return f"IfStmt({self.cond!r}, {self.then_body!r}, {self.else_body!r})"
+
+
 class Expr:
     pass
+
+
+class BinaryExpr(Expr):
+    def __init__(self, left, op, right):
+        super().__init__()
+        self.left = left
+        self.op = op
+        self.right = right
+
+    def __repr__(self):
+        return f"BinaryExpr({self.left!r}, {self.op!r}, {self.right!r})"
+
+
+class UnaryExpr(Expr):
+    def __init__(self, op, expr):
+        super().__init__()
+        self.op = op
+        self.expr = expr
+
+    def __repr__(self):
+        return f"UnaryOp({self.op!r}, {self.expr!r})"
 
 
 class CallExpr(Expr):
@@ -214,6 +268,14 @@ class IdentExpr(Expr):
 
     def __repr__(self):
         return f"IdentExpr({self.name!r})"
+
+
+class BoolExpr(Expr):
+    def __init__(self, value):
+        self.value = value
+
+    def __repr__(self):
+        return f"BoolExpr({self.value!r})"
 
 
 class IntExpr(Expr):
@@ -349,6 +411,8 @@ def parse_statement(it):
         return parse_return_statement(it)
     elif it.peek().type is T.VAR:
         return parse_var_decl(it, local=True)
+    elif it.peek().type is T.IF:
+        return parse_if_statement(it)
     else:
         return parse_expr_statement(it)
 
@@ -384,35 +448,146 @@ def parse_var_decl(it, local):
     return VarDecl(name, type_, initializer)
 
 
+def parse_if_statement(it):
+    _expect(next(it), T.IF)
+
+    cond = parse_expression(it)
+    _expect(next(it), T.LBRACE)
+
+    then_body = []
+    while it.peek().type is not T.RBRACE:
+        then_body.append(parse_statement(it))
+
+    _expect(next(it), T.RBRACE)
+
+    if it.peek().type is T.ELSE:
+        next(it)
+        if it.peek().type is T.IF:
+            else_body = [parse_if_statement(it)]
+        else:
+            _expect(next(it), T.LBRACE)
+
+            else_body = []
+            while it.peek().type is not T.RBRACE:
+                else_body.append(parse_statement(it))
+
+        _expect(next(it), T.RBRACE)
+    else:
+        else_body = None
+
+    return IfStmt(cond, then_body, else_body)
+
+
 def parse_expr_statement(it):
     expr = parse_expression(it)
     _expect(next(it), T.SEMICOLON)
     return ExprStmt(expr)
 
 
+class UnaryOp(Enum):
+    LOGICAL_NOT = T.BANG
+
+
+class Assoc(Enum):
+    LEFT = auto()
+    RIGHT = auto()
+
+
+class BinaryOp(Enum):
+    LOGICAL_AND = T.ANDAND
+    LOGICAL_OR = T.OROR
+
+
+precedence = dict(
+    (op, prec)
+    for prec, op in enumerate(
+        [
+            BinaryOp.LOGICAL_OR,
+            BinaryOp.LOGICAL_AND,
+        ]
+    )
+)
+
+associativity = defaultdict(lambda: Assoc.LEFT, {})
+
+
 def parse_expression(it):
-    if it.peek().type is T.INTEGER:
-        return IntExpr(int(next(it).text))
-    elif it.peek().type is T.IDENT:
-        expr = IdentExpr(next(it).text)
-        if it.peek().type is T.LPAREN:
+    expr_stack = [parse_unary_op(it)]
+    operator_stack = []
+
+    def reduce():
+        right, left = expr_stack.pop(), expr_stack.pop()
+        expr_stack.append(BinaryExpr(left, operator_stack.pop(), right))
+
+    while True:
+        try:
+            op = BinaryOp(it.peek().type)
+        except ValueError:
+            break
+        else:
             next(it)
-            args = []
-            first = True
-            while it.peek().type is not T.RPAREN:
-                if first:
-                    first = False
-                else:
-                    _expect(next(it), T.COMMA)
-                args.append(parse_expression(it))
-            _expect(next(it), T.RPAREN)
-            expr = CallExpr(expr, args)
+
+        if operator_stack:
+            prev_op = operator_stack[-1]
+
+            if (op is prev_op and associativity[op] is Assoc.LEFT) or precedence[
+                operator_stack[-1]
+            ] < precedence[op]:
+                reduce()
+
+        operator_stack.append(op)
+        expr_stack.append(parse_unary_op(it))
+
+    while operator_stack:
+        reduce()
+
+    result = expr_stack.pop()
+    assert not expr_stack
+    return result
+
+
+def parse_unary_op(it):
+    if it.peek().type is T.BANG:
+        return UnaryExpr(UnaryOp(next(it).type), parse_unary_op(it))
+    else:
+        expr = parse_atom(it)
+        while it.peek().type is T.LPAREN:
+            next(it)
+            expr = parse_call_expr(it, expr)
         return expr
-    elif it.peek().type is T.STRING:
+
+
+def parse_atom(it):
+    ty = it.peek().type
+    if ty is T.LPAREN:
+        next(it)
+        expr = parse_expression(it)
+        _expect(next(it), T.RPAREN)
+        return expr
+    elif ty is T.INTEGER:
+        return IntExpr(int(next(it).text))
+    elif ty is T.IDENT:
+        return IdentExpr(next(it).text)
+    elif ty is T.STRING:
         return StringExpr(next(it).text[1:-1])
+    elif ty in (T.TRUE, T.FALSE):
+        return BoolExpr(next(it).type is T.TRUE)
     else:
         tok = next(it)
         raise UnexpectedToken(tok.pos, tok.text)
+
+
+def parse_call_expr(it, target):
+    args = []
+    first = True
+    while it.peek().type is not T.RPAREN:
+        if first:
+            first = False
+        else:
+            _expect(next(it), T.COMMA)
+        args.append(parse_expression(it))
+    _expect(next(it), T.RPAREN)
+    return CallExpr(target, args)
 
 
 def parse_type_expr(it):

@@ -1,13 +1,27 @@
-declare function puts(str: *u8);
-declare function strlen(str: *u8): u32;
+declare function puts(string: **u8);
 
-function inner(): i32 {
-    puts("Testing");
-    return strlen("wowowowow");
+function x(): bool {
+    puts("in x");
+    return true;
+}
+
+function y(): bool {
+    puts("in y");
+    return true;
+}
+
+function z(): bool {
+    puts("in z");
+    return true;
 }
 
 function main(argc: i32, argv: **u8): i32 {
-    puts("Hello, world!");
-    var code = inner();
-    return code;
+    var cond = !(x() && y()) || z();
+    if cond {
+        puts("true");
+    } else {
+        puts("false");
+    }
+
+    return 0;
 }

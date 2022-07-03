@@ -164,7 +164,7 @@ class Address:
         if self.offset is None:
             return self.reg.name(self.size)
         else:
-            return b"%s(%s)" % (self.offset, self.reg.name(self.size))
+            return b"%s(%s)" % (self.offset, self.reg.name(8))
 
     def __eq__(self, other):
         if not isinstance(other, Address):
@@ -174,3 +174,6 @@ class Address:
             and self.size == other.size
             and self.offset == other.offset
         )
+
+    def with_size(self, size):
+        return Address(self.reg, size, self.offset)
