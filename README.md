@@ -1,15 +1,17 @@
 # From
 
 ```ts
-extern function fputs(string: *u8, file: *u64);
-extern var __stdoutp: *u64;
-extern var __stderrp: *u64;
+extern function printf(fmt: *u8, intval: i32);
 
 function main(): i32 {
-    fputs("Hello", __stdoutp);
-    fputs("errororor", __stderrp);
+    var i = 0;
 
-    return 0;
+    while !(i == 10) {
+        printf("%d", i);
+        i = i + 1;
+    }
+
+    return i;
 }
 ```
 
@@ -22,25 +24,34 @@ function main(): i32 {
 _main:
 	pushq	%rbp
 	movq	%rsp, %rbp
+	subq	$16, %rsp
 	## end prologue
 	## function body
-	leaq	L1(%rip), %rdi
-	movq	___stdoutp@GOTPCREL(%rip), %rax
-	movq	0(%rax), %rsi	## __stdoutp
-	call	_fputs
-	leaq	L2(%rip), %rdi
-	movq	___stderrp@GOTPCREL(%rip), %rax
-	movq	0(%rax), %rsi	## __stderrp
-	call	_fputs
-	xorl	%eax, %eax
+	movl	$0, -4(%rbp)
+	jmp	L2
+L1:
+	leaq	L3(%rip), %rdi
+	movl	-4(%rbp), %esi	## i
+	call	_printf
+	movl	-4(%rbp), %eax	## i
+	movl	$1, -8(%rbp)
+	addl	-8(%rbp), %eax
+	movl	%eax, -4(%rbp)
+L2:
+	movl	-4(%rbp), %eax
+	movl	%eax, -8(%rbp)	## i
+	movl	$10, %eax
+	cmpl	%eax, -8(%rbp)
+	jne	L1
+	movl	-4(%rbp), %eax	## i
 L0:
 	## epilogue
+	addq	$16, %rsp
 	popq	%rbp
 	ret
 
 	.section	__TEXT,__cstring
-L1:	.asciz "Hello"
-L2:	.asciz "errororor"
+L3:	.asciz "%d"
 ```
 
 # Notes

@@ -1,6 +1,10 @@
 _size_suffix = [None, b"b", b"w", None, b"l", None, None, None, b"q"]
 
 
+def add(size):
+    return b"add%s" % _size_suffix[size]
+
+
 def cmp(size):
     return b"cmp%s" % _size_suffix[size]
 

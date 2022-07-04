@@ -44,6 +44,7 @@ class T(Enum):
     LBRACE = auto()
     LPAREN = auto()
     OROR = auto()
+    PLUS = auto()
     RBRACE = auto()
     RETURN = auto()
     RPAREN = auto()
@@ -52,6 +53,7 @@ class T(Enum):
     STRING = auto()
     TRUE = auto()
     VAR = auto()
+    WHILE = auto()
 
 
 class ParseError(Exception):
@@ -80,6 +82,7 @@ _one_char = {
     "(": T.LPAREN,
     ")": T.RPAREN,
     "*": T.STAR,
+    "+": T.PLUS,
     ",": T.COMMA,
     ":": T.COLON,
     ";": T.SEMICOLON,
@@ -96,6 +99,7 @@ _keywords = {
     "return": T.RETURN,
     "true": T.TRUE,
     "var": T.VAR,
+    "while": T.WHILE,
 }
 
 
@@ -241,6 +245,16 @@ class IfStmt(Stmt):
 
     def __repr__(self):
         return f"IfStmt({self.cond!r}, {self.then_body!r}, {self.else_body!r})"
+
+
+class WhileLoop(Stmt):
+    def __init__(self, cond, body):
+        super().__init__()
+        self.cond = cond
+        self.body = body
+
+    def __repr__(self):
+        return f"WhileLoop({self.cond!r}, {self.body!r})"
 
 
 class Expr:
@@ -441,6 +455,8 @@ def parse_statement(it):
         return parse_local_var_decl(it)
     elif it.peek().type is T.IF:
         return parse_if_statement(it)
+    elif it.peek().type is T.WHILE:
+        return parse_while_loop(it)
     else:
         return parse_expr_statement(it)
 
@@ -513,6 +529,20 @@ def parse_if_statement(it):
     return IfStmt(cond, then_body, else_body)
 
 
+def parse_while_loop(it):
+    _expect(next(it), T.WHILE)
+
+    cond = parse_expression(it)
+    _expect(next(it), T.LBRACE)
+
+    body = []
+    while it.peek().type is not T.RBRACE:
+        body.append(parse_statement(it))
+
+    _expect(next(it), T.RBRACE)
+    return WhileLoop(cond, body)
+
+
 def parse_expr_statement(it):
     expr = parse_expression(it)
     _expect(next(it), T.SEMICOLON)
@@ -529,6 +559,8 @@ class Assoc(Enum):
 
 
 class BinaryOp(Enum):
+    ADDITION = T.PLUS
+    ASSIGNMENT = T.EQ
     LOGICAL_AND = T.ANDAND
     LOGICAL_OR = T.OROR
     EQUAL = T.EQEQ
@@ -538,14 +570,21 @@ precedence = dict(
     (op, prec)
     for prec, op in enumerate(
         [
+            BinaryOp.ADDITION,
             BinaryOp.EQUAL,
             BinaryOp.LOGICAL_AND,
             BinaryOp.LOGICAL_OR,
+            BinaryOp.ASSIGNMENT,
         ]
     )
 )
 
-associativity = defaultdict(lambda: Assoc.LEFT, {})
+associativity = defaultdict(
+    lambda: Assoc.LEFT,
+    {
+        BinaryOp.ASSIGNMENT: Assoc.RIGHT,
+    },
+)
 
 
 def parse_expression(it):

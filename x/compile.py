@@ -1,7 +1,7 @@
 from collections import ChainMap
 from contextlib import contextmanager
 from x import opt, parse, register
-from x.instr import cmp, mov, movs
+from x.instr import add, cmp, mov, movs
 
 
 # Type system
@@ -88,6 +88,19 @@ def analyze_type(ctx, expr):
     elif isinstance(expr, parse.BinaryExpr):
         if expr.op in (parse.BinaryOp.LOGICAL_AND, parse.BinaryOp.LOGICAL_OR):
             return BoolType()
+        elif expr.op is parse.BinaryOp.ASSIGNMENT:
+            return analyze_type(ctx, expr.right)
+        elif expr.op is parse.BinaryOp.ADDITION:
+            left_ty, right_ty = analyze_type(ctx, expr.left), analyze_type(
+                ctx, expr.right
+            )
+            if (
+                not isinstance(left_ty, IntType)
+                or not isinstance(right_ty, IntType)
+                or not is_assignable(right_ty, left_ty)
+            ):
+                raise XTypeError(f"Cannot add {right_ty} to {left_ty}")
+            return left_ty
         raise NotImplementedError(expr.op)
     else:
         raise NotImplementedError(expr)
@@ -221,6 +234,14 @@ class LocalVariable(Variable):
         )
 
     def load(self, dest):
+        if dest.offset:
+            transient_reg = register.Address(register.a, self.type.size)
+            return b"\n".join(
+                [
+                    b"	%s	%s, %s" % (mov(self.type.size), self.addr, transient_reg),
+                    b"	%s	%s, %s" % (mov(self.type.size), transient_reg, dest),
+                ]
+            )
         return b"	%s	%s, %s" % (mov(self.type.size), self.addr, dest)
 
     def store(self, source):
@@ -489,6 +510,18 @@ def compile_statement(ctx, stmt):
             ctx.func.exit_scope()
         ctx.emitln(b"%s:" % end_label)
         ctx.comment(b"end if")
+    elif isinstance(stmt, parse.WhileLoop):
+        top_label = Label.create()
+        cond_label = Label.create()
+
+        ctx.emitln(b"	jmp	%s" % cond_label)
+        ctx.emitln(b"%s:" % top_label)
+        ctx.func.enter_scope()
+        for body_stmt in stmt.body:
+            compile_statement(ctx, body_stmt)
+        ctx.func.exit_scope()
+        ctx.emitln(b"%s:" % cond_label)
+        compile_logical_expr(ctx, stmt.cond, Jump(top_label, False))
     elif isinstance(stmt, parse.ExprStmt):
         compile_expr(ctx, stmt.expr, None)
     else:
@@ -573,6 +606,34 @@ def compile_expr(ctx, expr, dest):
                         dest,
                     )
                 )
+    elif isinstance(expr, parse.BinaryExpr) and expr.op is parse.BinaryOp.ASSIGNMENT:
+        if not is_assignment_target(expr.left):
+            raise XTypeError(f"Cannot assign to {expr.left!r}")
+
+        right_ty = analyze_type(ctx, expr.right)
+        assert isinstance(expr.left, parse.IdentExpr)
+        var = ctx.func.resolve_variable(expr.left.name)
+
+        dest = dest or register.Address(register.a, right_ty.size)
+
+        compile_expr(ctx, expr.right, dest)
+
+        if not is_assignable(right_ty, var.type):
+            raise XTypeError(
+                f"Cannot assign value of type {right_ty} to {expr.left.name}, which is {var.type}"  # noqa E501
+            )
+
+        ctx.emitln(var.store(dest))
+    elif isinstance(expr, parse.BinaryExpr) and expr.op is parse.BinaryOp.ADDITION:
+        left_ty, right_ty = analyze_type(ctx, expr.left), analyze_type(ctx, expr.right)
+        result_ty = analyze_type(ctx, expr)
+        with ctx.func.stack_temp(right_ty) as right_dest:
+            compile_expr(ctx, expr.left, dest.with_size(left_ty.size))
+            implicitly_cast(ctx, dest.with_size(left_ty.size), left_ty, result_ty)
+            compile_expr(ctx, expr.right, right_dest.addr)
+            implicitly_cast(ctx, right_dest.addr, right_ty, result_ty)
+            if dest:
+                ctx.emitln(b"	%s	%s, %s" % (add(result_ty.size), right_dest.addr, dest))
     elif is_logical_expr(expr):
         false_label = Label.create()
         after_label = Label.create()
@@ -585,6 +646,10 @@ def compile_expr(ctx, expr, dest):
 
     else:
         raise NotImplementedError(expr)
+
+
+def is_assignment_target(expr):
+    return isinstance(expr, parse.IdentExpr)
 
 
 def is_logical_expr(expr):
@@ -669,6 +734,6 @@ def implicitly_cast(ctx, addr, from_ty, to_ty):
         % (
             mov_instr,
             addr,
-            addr,
+            addr.with_size(to_ty.size),
         )
     )

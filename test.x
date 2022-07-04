@@ -1,10 +1,12 @@
-extern function fputs(string: *u8, file: *u64);
-extern var __stdoutp: *u64;
-extern var __stderrp: *u64;
+extern function printf(fmt: *u8, intval: i32);
 
 function main(): i32 {
-    fputs("Hello", __stdoutp);
-    fputs("errororor", __stderrp);
+    var i = 0;
 
-    return 0;
+    while !(i == 10) {
+        printf("%d", i);
+        i = i + 1;
+    }
+
+    return i;
 }
