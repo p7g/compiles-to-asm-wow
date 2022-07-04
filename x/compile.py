@@ -137,7 +137,7 @@ def is_same_type(a, b):
     elif isinstance(a, BoolType) and isinstance(b, BoolType):
         return True
     else:
-        raise NotImplementedError((a, b))
+        return False
 
 
 # Code generation
@@ -521,7 +521,7 @@ def compile_statement(ctx, stmt):
             compile_statement(ctx, body_stmt)
         ctx.func.exit_scope()
         ctx.emitln(b"%s:" % cond_label)
-        compile_logical_expr(ctx, stmt.cond, Jump(top_label, False))
+        compile_logical_expr(ctx, stmt.cond, Jump(top_label, True))
     elif isinstance(stmt, parse.ExprStmt):
         compile_expr(ctx, stmt.expr, None)
     else:
@@ -702,7 +702,9 @@ def compile_logical_expr(ctx, expr, jump, invert=False):
                 reg_a = register.Address(register.a, left_ty.size)
                 compile_expr(ctx, expr.right, reg_a)
                 ctx.emitln(b"	%s	%s, %s" % (cmp(left_ty.size), reg_a, left_var.addr))
-                ctx.emitln(b"	%s	%s" % (b"je" if jump.if_true else b"jne", jump.dest))
+                ctx.emitln(
+                    b"	%s	%s" % (b"je" if jump.if_true ^ invert else b"jne", jump.dest)
+                )
         else:
             raise NotImplementedError
     else:
