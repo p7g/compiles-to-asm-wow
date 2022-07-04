@@ -163,10 +163,10 @@ class ProgramContext:
         return len(self._asm_lines)
 
     def comment(self, message):
-        self._asm_lines[-1] += b"	/* " + message + b" */"
+        self._asm_lines[-1] += b"	## " + message
 
     def commentln(self, message):
-        self._asm_lines.append(b"	/* " + message + b" */")
+        self._asm_lines.append(b"	## " + message)
 
     def declare_global(self, name, type_, extern):
         var = GlobalVariable(name.encode("ascii"), type_, extern)

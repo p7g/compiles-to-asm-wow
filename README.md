@@ -22,19 +22,19 @@ function main(): i32 {
 _main:
 	pushq	%rbp
 	movq	%rsp, %rbp
-	/* end prologue */
-	/* function body */
+	## end prologue
+	## function body
 	leaq	L1(%rip), %rdi
 	movq	___stdoutp@GOTPCREL(%rip), %rax
-	movq	0(%rax), %rsi	/* __stdoutp */
+	movq	0(%rax), %rsi	## __stdoutp
 	call	_fputs
 	leaq	L2(%rip), %rdi
 	movq	___stderrp@GOTPCREL(%rip), %rax
-	movq	0(%rax), %rsi	/* __stderrp */
+	movq	0(%rax), %rsi	## __stderrp
 	call	_fputs
 	xorl	%eax, %eax
 L0:
-	/* epilogue */
+	## epilogue
 	popq	%rbp
 	ret
 
