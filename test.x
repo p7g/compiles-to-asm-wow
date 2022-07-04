@@ -1,27 +1,10 @@
-declare function puts(string: **u8);
+extern function fputs(string: *u8, file: *u64);
+extern var __stdoutp: *u64;
+extern var __stderrp: *u64;
 
-function x(): bool {
-    puts("in x");
-    return true;
-}
-
-function y(): bool {
-    puts("in y");
-    return true;
-}
-
-function z(): bool {
-    puts("in z");
-    return true;
-}
-
-function main(argc: i32, argv: **u8): i32 {
-    var cond = !(x() && y()) || z();
-    if cond {
-        puts("true");
-    } else {
-        puts("false");
-    }
+function main(): i32 {
+    fputs("Hello", __stdoutp);
+    fputs("errororor", __stderrp);
 
     return 0;
 }

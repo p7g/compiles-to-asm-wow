@@ -31,9 +31,9 @@ class T(Enum):
     BANG = auto()
     COLON = auto()
     COMMA = auto()
-    DECLARE = auto()
     ELLIPSIS = auto()
     ELSE = auto()
+    EXTERN = auto()
     EQ = auto()
     FALSE = auto()
     FUNCTION = auto()
@@ -87,8 +87,8 @@ _one_char = {
 }
 
 _keywords = {
-    "declare": T.DECLARE,
     "else": T.ELSE,
+    "extern": T.EXTERN,
     "false": T.FALSE,
     "function": T.FUNCTION,
     "if": T.IF,
@@ -186,15 +186,27 @@ class Stmt:
     pass
 
 
-class VarDecl(Decl, Stmt):
-    def __init__(self, name, type_, initializer):
+class AbstractVarDecl(Decl, Stmt):
+    def __init__(self, name, type_):
         super().__init__()
         self.name = name
         self.type = type_
+
+    def __repr__(self):
+        return f"{type(self).__name__}({self.name!r}, {self.type!r})"
+
+
+class VarDecl(AbstractVarDecl):
+    def __init__(self, name, type_, initializer):
+        super().__init__(name, type_)
         self.initializer = initializer
 
     def __repr__(self):
         return f"VarDecl({self.name!r}, {self.type!r}, {self.initializer!r})"
+
+
+class ExternVarDecl(AbstractVarDecl):
+    pass
 
 
 class ExprStmt(Stmt):
@@ -334,8 +346,8 @@ def parse(tokens):
             return
 
         try:
-            if tok.type is T.DECLARE:
-                yield parse_function_proto(it)
+            if tok.type is T.EXTERN:
+                yield from parse_extern_decl(it)
             elif tok.type is T.FUNCTION:
                 yield parse_function_decl(it)
             elif tok.type is T.VAR:
@@ -345,6 +357,18 @@ def parse(tokens):
                 raise UnexpectedToken(tok.pos, tok.text)
         except StopIteration:
             raise UnexpectedEOF()
+
+
+def parse_extern_decl(it):
+    _expect(next(it), T.EXTERN)
+    ty = it.peek().type
+
+    if ty is T.FUNCTION:
+        yield parse_function_proto(it)
+    elif ty is T.VAR:
+        yield parse_extern_var_decl(it)
+    else:
+        raise UnexpectedToken(ty)
 
 
 Param = namedtuple("Param", "name type")
@@ -387,7 +411,6 @@ def parse_function_sig(it):
 
 
 def parse_function_proto(it):
-    _expect(next(it), T.DECLARE)
     decl = parse_function_sig(it)
     _expect(next(it), T.SEMICOLON)
     return decl
@@ -410,7 +433,7 @@ def parse_statement(it):
     if it.peek().type is T.RETURN:
         return parse_return_statement(it)
     elif it.peek().type is T.VAR:
-        return parse_var_decl(it, local=True)
+        return parse_local_var_decl(it)
     elif it.peek().type is T.IF:
         return parse_if_statement(it)
     else:
@@ -427,7 +450,7 @@ def parse_return_statement(it):
     return ReturnStmt(expr)
 
 
-def parse_var_decl(it, local):
+def parse_local_var_decl(it):
     _expect(next(it), T.VAR)
     name = _expect(next(it), T.IDENT).text
     if it.peek().type is T.COLON:
@@ -441,11 +464,18 @@ def parse_var_decl(it, local):
     else:
         initializer = None
     _expect(next(it), T.SEMICOLON)
-    if not local and not type_:
-        raise ParseError("Global variables must have explicit types")
     if not type_ and not initializer:
         raise ParseError("Variable must have either type annotation or initializer")
     return VarDecl(name, type_, initializer)
+
+
+def parse_extern_var_decl(it):
+    _expect(next(it), T.VAR)
+    name = _expect(next(it), T.IDENT).text
+    _expect(next(it), T.COLON)
+    type_ = parse_type_expr(it)
+    _expect(next(it), T.SEMICOLON)
+    return ExternVarDecl(name, type_)
 
 
 def parse_if_statement(it):

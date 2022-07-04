@@ -56,16 +56,10 @@ class FunctionType(Type):
 
 def analyze_type(ctx, expr):
     if isinstance(expr, parse.IdentExpr):
-        # TODO abstract over name resolution
         try:
             return ctx.func.resolve_variable(expr.name).type
         except XTypeError:
-            pass
-        try:
-            return ctx.declared_functions[expr.name].type
-        except KeyError:
-            pass
-        raise XTypeError(f"No variable named {expr.name!r} is in scope")
+            raise XTypeError(f"No variable named {expr.name!r} is in scope")
     elif isinstance(expr, parse.IntExpr):
         return IntType(4, signed=True, from_literal=True)
     elif isinstance(expr, parse.BoolExpr):
@@ -141,7 +135,7 @@ def global_name(name):
 
 class ProgramContext:
     def __init__(self):
-        self.declared_functions = {}
+        self.global_scope = {}
         self.strings = []
         self.named_types = {
             "bool": BoolType(),
@@ -174,6 +168,11 @@ class ProgramContext:
     def commentln(self, message):
         self._asm_lines.append(b"	/* " + message + b" */")
 
+    def declare_global(self, name, type_, extern):
+        var = GlobalVariable(name.encode("ascii"), type_, extern)
+        self.global_scope[name] = var
+        return var
+
     @property
     def asm(self):
         return b"\n".join(self._asm_lines)
@@ -196,9 +195,20 @@ class Label:
 
 
 class Variable:
-    def __init__(self, name, type_, stack_offset):
+    def __init__(self, name, type_):
         self.name = name
         self.type = type_
+
+    def load(self, dest):
+        raise NotImplementedError
+
+    def store(self, source):
+        raise NotImplementedError
+
+
+class LocalVariable(Variable):
+    def __init__(self, name, type_, stack_offset):
+        super().__init__(name, type_)
         self.stack_offset = stack_offset
 
     @property
@@ -207,6 +217,16 @@ class Variable:
             register.bp,
             size=self.type.size,
             offset=str(-self.stack_offset).encode("ascii"),
+        )
+
+    def load(self, dest):
+        return b"	%s	%s, %s" % (mov(self.type.size), self.addr, dest)
+
+    def store(self, source):
+        return b"	%s	%s, %s" % (
+            mov(self.type.size),
+            source,
+            self.addr,
         )
 
 
@@ -225,12 +245,11 @@ assert align(32, 4) == 32, align(32, 4)
 assert align(32, 8) == 32, align(32, 8)
 
 
-class FuncMeta:
-    def __init__(self, name, type_, end_label):
-        self.name = name
-        self.type = type_
+class FuncMeta(Variable):
+    def __init__(self, name, type_, end_label, global_scope):
+        super().__init__(name, type_)
         self.end_label = end_label
-        self._scope = ChainMap()
+        self._scope = ChainMap({}, global_scope)
         self._next_stack_offset = 0
 
     def enter_scope(self):
@@ -244,7 +263,7 @@ class FuncMeta:
             raise XTypeError(f"Cannot redeclare variable {name!r}")
         align_to = 4 if type_.size <= 4 else 8 if 4 < type_.size <= 8 else 16
         self._next_stack_offset = align(self._next_stack_offset, align_to) + align_to
-        var = Variable(name, type_, self._next_stack_offset)
+        var = LocalVariable(name, type_, self._next_stack_offset)
         self._scope[name] = var
         return var
 
@@ -254,8 +273,52 @@ class FuncMeta:
         except KeyError:
             raise XTypeError(f"No variable named {name!r}")
 
+    def load(self, dest):
+        return b"	leaq	%s(%rip), %s" % (self.name, dest)
+
+    def store(self, source):
+        raise XTypeError("Cannot assign to function")
+
     def __repr__(self):
         return f"FuncMeta(name={self.name!r}, type={self.type!r}, end_label={self.end_label!r})"  # noqa E501
+
+
+class GlobalVariable(Variable):
+    def __init__(self, name, type_, extern):
+        super().__init__(name, type_)
+        self.extern = extern
+
+    def load(self, dest):
+        if not self.extern:
+            raise NotImplementedError
+        return b"\n".join(
+            [
+                b"	movq	%s@GOTPCREL(%%rip), %s"
+                % (global_name(self.name), register.Address(register.a, 8)),
+                b"	%s	%s, %s"
+                % (
+                    mov(self.type.size),
+                    register.Address(register.a, self.type.size, offset=b"0"),
+                    dest,
+                ),
+            ]
+        )
+
+    def store(self, source):
+        if not self.extern:
+            raise NotImplementedError
+        return b"\n".join(
+            [
+                b"	movq	%s@GOTPCREL(%%rip), %s"
+                % (global_name(self.name), register.Address(register.a, 8)),
+                b"	%s	%s, %s"
+                % (
+                    mov(self.type.size),
+                    source,
+                    register.Address(register.a, self.type.size, offset=0),
+                ),
+            ]
+        )
 
 
 def xcompile(decls):
@@ -264,68 +327,10 @@ def xcompile(decls):
     ctx.emitln(b"	.section	__TEXT,__text")
 
     for decl in decls:
-        assert isinstance(decl, parse.FuncDecl)
-
-        # Create type for function
-        params = [compile_type(ctx, param.type) for param in decl.params]
-        ret = compile_type(ctx, decl.ret) if decl.ret else None
-        func_ty = FunctionType(params, ret)
-        end_label = None if decl.is_proto else Label.create()
-        func_meta = FuncMeta(decl.name.encode("ascii"), func_ty, end_label)
-        ctx.func = func_meta
-
-        ctx.declared_functions[decl.name] = func_meta
-
-        # Just add the type
-        if decl.is_proto:
-            continue
-
-        symbol_name = global_name(func_meta.name)
-        # TODO: Functions static by default
-        ctx.emitln(b"")
-        ctx.commentln(func_meta.name)
-        ctx.emitln(b"	.globl	%s" % symbol_name)
-        ctx.emitln(b"%s:" % symbol_name)
-
-        ctx.emitln(b"	pushq	%rbp")
-        ctx.emitln(b"	movq	%rsp, %rbp")
-        # The number of locals is only known after compiling the contents of
-        # the function so the instruction to allocate stack space is patched in
-        # after compiling the body.
-        allocate_stack_room = ctx.next_lineno()
-        ctx.commentln(b"end prologue")
-
-        # Move all the arguments to the stack
-        if params:
-            ctx.commentln(b"Move all the arguments to the stack")
-        for param_ast, param_ty, arg_reg in zip(
-            decl.params, params, register.argument_registers
-        ):
-            var = func_meta.declare_variable(param_ast.name, param_ty)
-            ctx.emitln(
-                b"	%s	%s, %s"
-                % (
-                    mov(param_ty.size),
-                    register.Address(arg_reg, size=param_ty.size),
-                    var.addr,
-                )
-            )
-
-        ctx.commentln(b"function body")
-        for stmt in decl.body:
-            compile_statement(ctx, stmt)
-
-        ctx.emitln(b"%s:" % end_label)
-
-        locals_size = register.Immediate(align(func_meta._next_stack_offset, 16))
-        # Patch in sub to reserve stack space for locals
-        ctx.insertln(allocate_stack_room, b"	subq	%s, %%rsp" % locals_size)
-        ctx.commentln(b"epilogue")
-        ctx.emitln(b"	addq	%s, %%rsp" % locals_size)
-        ctx.emitln(b"	popq	%rbp")
-        ctx.emitln(b"	ret")
-
-        ctx.func = None
+        if isinstance(decl, parse.FuncDecl):
+            compile_func_decl(ctx, decl)
+        elif isinstance(decl, parse.AbstractVarDecl):
+            compile_global_var_decl(ctx, decl)
 
     if ctx.strings:
         ctx.emitln(b"")
@@ -335,6 +340,72 @@ def xcompile(decls):
         ctx.emitln(b'%s:	.asciz "%s"' % (label, string.encode("utf-8")))
 
     return opt.peephole_opt(ctx.asm)
+
+
+def compile_global_var_decl(ctx, decl):
+    if not isinstance(decl, parse.ExternVarDecl):
+        raise NotImplementedError
+
+    ctx.declare_global(decl.name, compile_type(ctx, decl.type), extern=True)
+
+
+def compile_func_decl(ctx, decl):
+    assert isinstance(decl, parse.FuncDecl)
+
+    # Create type for function
+    params = [compile_type(ctx, param.type) for param in decl.params]
+    ret = compile_type(ctx, decl.ret) if decl.ret else None
+    func_ty = FunctionType(params, ret)
+    end_label = None if decl.is_proto else Label.create()
+    func_meta = FuncMeta(
+        decl.name.encode("ascii"), func_ty, end_label, ctx.global_scope
+    )
+    ctx.func = func_meta
+
+    ctx.global_scope[decl.name] = func_meta
+
+    # Just add the type
+    if decl.is_proto:
+        return
+
+    symbol_name = global_name(func_meta.name)
+    # TODO: Functions static by default
+    ctx.emitln(b"")
+    ctx.emitln(b"	.globl	%s" % symbol_name)
+    ctx.emitln(b"%s:" % symbol_name)
+
+    ctx.emitln(b"	pushq	%rbp")
+    ctx.emitln(b"	movq	%rsp, %rbp")
+    # The number of locals is only known after compiling the contents of
+    # the function so the instruction to allocate stack space is patched in
+    # after compiling the body.
+    allocate_stack_room = ctx.next_lineno()
+    ctx.commentln(b"end prologue")
+
+    # Move all the arguments to the stack
+    if params:
+        ctx.commentln(b"Move all the arguments to the stack")
+    for param_ast, param_ty, arg_reg in zip(
+        decl.params, params, register.argument_registers
+    ):
+        var = func_meta.declare_variable(param_ast.name, param_ty)
+        ctx.emitln(var.store(register.Address(arg_reg, size=param_ty.size)))
+
+    ctx.commentln(b"function body")
+    for stmt in decl.body:
+        compile_statement(ctx, stmt)
+
+    ctx.emitln(b"%s:" % end_label)
+
+    locals_size = register.Immediate(align(func_meta._next_stack_offset, 16))
+    # Patch in sub to reserve stack space for locals
+    ctx.insertln(allocate_stack_room, b"	subq	%s, %%rsp" % locals_size)
+    ctx.commentln(b"epilogue")
+    ctx.emitln(b"	addq	%s, %%rsp" % locals_size)
+    ctx.emitln(b"	popq	%rbp")
+    ctx.emitln(b"	ret")
+
+    ctx.func = None
 
 
 def compile_type(ctx, ast_ty):
@@ -368,6 +439,7 @@ def compile_statement(ctx, stmt):
         elif stmt.initializer:
             ty = analyze_type(ctx, stmt.initializer)
         var = ctx.func.declare_variable(stmt.name, ty)
+        assert isinstance(var, LocalVariable)
         if stmt.initializer:
             compile_expr(ctx, stmt.initializer, var.addr)
     elif isinstance(stmt, parse.IfStmt):
@@ -436,25 +508,19 @@ def compile_expr(ctx, expr, dest):
         )
     elif isinstance(expr, parse.IdentExpr):
         var = ctx.func.resolve_variable(expr.name)
-        if dest != var.addr:
-            # FIXME: There should be some kinda move/cast operation
-            # FIXME: implicitly cast variable value to destination type if
-            # applicable
-            ctx.emitln(
-                b"	%s	%s, %s"
-                % (
-                    mov(var.type.size),
-                    var.addr,
-                    dest,
-                )
-            )
-            ctx.comment(expr.name.encode("ascii"))
+        # FIXME: There should be some kinda move/cast operation
+        # FIXME: implicitly cast variable value to destination type if
+        # applicable
+        ctx.emitln(var.load(dest))
+        ctx.comment(expr.name.encode("ascii"))
     elif isinstance(expr, parse.CallExpr):
         # TODO: Function pointers
         if not isinstance(expr.target, parse.IdentExpr):
             raise NotImplementedError
 
-        func = ctx.declared_functions[expr.target.name]
+        func = ctx.global_scope[expr.target.name]
+        if not isinstance(func, FuncMeta):
+            raise XTypeError("Cannot call non-function")
         assert len(func.type.params) <= len(register.argument_registers)
         assert len(func.type.params) == len(expr.args)
 

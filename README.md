@@ -1,18 +1,15 @@
 # From
 
 ```ts
-declare function puts(str: *u8);
-declare function strlen(str: *u8): u32;
+extern function fputs(string: *u8, file: *u64);
+extern var __stdoutp: *u64;
+extern var __stderrp: *u64;
 
-function inner(): i32 {
-    puts("Testing");
-    return strlen("wowowowow");
-}
+function main(): i32 {
+    fputs("Hello", __stdoutp);
+    fputs("errororor", __stderrp);
 
-function main(argc: i32, argv: **u8): i32 {
-    puts("Hello, world!");
-    var code = inner();
-    return code;
+    return 0;
 }
 ```
 
@@ -21,39 +18,29 @@ function main(argc: i32, argv: **u8): i32 {
 ```asm
 	.section	__TEXT,__text
 
-	.globl	_inner
-_inner:
-	pushq	%rbp
-	movq	%rsp, %rbp
-	leaq	L1(%rip), %rdi
-	call	_puts
-	leaq	L2(%rip), %rdi
-	call	_strlen
-L0:
-	popq	%rbp
-	ret
-
 	.globl	_main
 _main:
 	pushq	%rbp
 	movq	%rsp, %rbp
-	subq	$32, %rsp
-	movl	%edi, -4(%rbp)
-	movq	%rsi, -16(%rbp)
-	leaq	L4(%rip), %rdi
-	call	_puts
-	call	_inner
-	movl	%eax, -20(%rbp)
-	movl	-20(%rbp), %eax
-L3:
-	addq	$32, %rsp
+	/* end prologue */
+	/* function body */
+	leaq	L1(%rip), %rdi
+	movq	___stdoutp@GOTPCREL(%rip), %rax
+	movq	0(%rax), %rsi	/* __stdoutp */
+	call	_fputs
+	leaq	L2(%rip), %rdi
+	movq	___stderrp@GOTPCREL(%rip), %rax
+	movq	0(%rax), %rsi	/* __stderrp */
+	call	_fputs
+	xorl	%eax, %eax
+L0:
+	/* epilogue */
 	popq	%rbp
 	ret
 
 	.section	__TEXT,__cstring
-L1:	.asciz "Testing"
-L2:	.asciz "wowowowow"
-L4:	.asciz "Hello, world!"
+L1:	.asciz "Hello"
+L2:	.asciz "errororor"
 ```
 
 # Notes
