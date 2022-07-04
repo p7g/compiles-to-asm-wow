@@ -58,7 +58,7 @@ class FunctionType(Type):
 def analyze_type(ctx, expr):
     if isinstance(expr, parse.IdentExpr):
         try:
-            return ctx.func.resolve_variable(expr.name).type
+            return ctx.resolve_variable(expr.name).type
         except XTypeError:
             raise XTypeError(f"No variable named {expr.name!r} is in scope")
     elif isinstance(expr, parse.IntExpr):
@@ -191,6 +191,35 @@ class ProgramContext:
     def asm(self):
         return b"\n".join(self._asm_lines)
 
+    def declare_variable(self, name, type_):
+        if self.func:
+            ns = self.func._scope.maps[0]
+        else:
+            ns = self.global_scope
+
+        if name in ns:
+            raise XTypeError(f"Cannot redeclare variable {name!r}")
+        if self.func:
+            align_to = 4 if type_.size <= 4 else 8 if 4 < type_.size <= 8 else 16
+            self.func._next_stack_offset = (
+                align(self.func._next_stack_offset, align_to) + align_to
+            )
+            var = LocalVariable(name, type_, self.func._next_stack_offset)
+        else:
+            raise NotImplementedError
+
+        ns[name] = var
+        return var
+
+    def resolve_variable(self, name):
+        try:
+            if self.func:
+                return self.func._scope[name]
+            else:
+                return self.global_scope[name]
+        except KeyError:
+            raise XTypeError(f"No variable named {name!r}")
+
 
 class Label:
     next_idx = 0
@@ -252,82 +281,6 @@ class LocalVariable(Variable):
         )
 
 
-def align(addr, alignment):
-    import math
-
-    return math.ceil(addr / alignment) * alignment
-
-
-assert align(0, 4) == 0, align(0, 4)
-assert align(0, 8) == 0, align(0, 8)
-assert align(4, 8) == 8, align(4, 8)
-assert align(8, 8) == 8, align(8, 8)
-assert align(16, 4) == 16, align(16, 4)
-assert align(32, 4) == 32, align(32, 4)
-assert align(32, 8) == 32, align(32, 8)
-
-
-class FuncMeta(Variable):
-    def __init__(self, name, type_, end_label, global_scope):
-        super().__init__(name, type_)
-        self.end_label = end_label
-        self._scope = ChainMap({}, global_scope)
-        self._next_stack_offset = 0
-        self._stack_temps = []
-        self._next_stack_temp = 0
-
-    def enter_scope(self):
-        self._scope = self._scope.new_child()
-
-    def exit_scope(self):
-        self._scope = self._scope.parents
-
-    def declare_variable(self, name, type_):
-        if name in self._scope.maps[0]:
-            raise XTypeError(f"Cannot redeclare variable {name!r}")
-        align_to = 4 if type_.size <= 4 else 8 if 4 < type_.size <= 8 else 16
-        self._next_stack_offset = align(self._next_stack_offset, align_to) + align_to
-        var = LocalVariable(name, type_, self._next_stack_offset)
-        self._scope[name] = var
-        return var
-
-    def resolve_variable(self, name):
-        try:
-            return self._scope[name]
-        except KeyError:
-            raise XTypeError(f"No variable named {name!r}")
-
-    def load(self, dest):
-        return b"	leaq	%s(%rip), %s" % (self.name, dest)
-
-    def store(self, source):
-        raise XTypeError("Cannot assign to function")
-
-    @contextmanager
-    def stack_temp(self, type_):
-        import bisect
-        import operator
-
-        key = operator.attrgetter("type.size")
-
-        i = bisect.bisect_left(self._stack_temps, type_.size, key=key)
-        if i != len(self._stack_temps):
-            tmp = self._stack_temps.pop(i)
-            tmp.type = type_
-        else:
-            tmp = self.declare_variable(
-                b".tmp%s" % str(self._next_stack_temp).encode("ascii"), type_
-            )
-
-        try:
-            yield tmp
-        finally:
-            bisect.insort(self._stack_temps, tmp, key=key)
-
-    def __repr__(self):
-        return f"FuncMeta(name={self.name!r}, type={self.type!r}, end_label={self.end_label!r})"  # noqa E501
-
-
 class GlobalVariable(Variable):
     def __init__(self, name, type_, extern):
         super().__init__(name, type_)
@@ -349,6 +302,21 @@ class GlobalVariable(Variable):
             ]
         )
 
+    def load_addr(self, dest):
+        if not self.extern:
+            raise NotImplementedError
+        return b"\n".join(
+            [
+                b"	movq	%s@GOTPCREL(%%rip), %s"
+                % (global_name(self.name), register.Address(register.a, 8)),
+                b"	leaq	%s, %s"
+                % (
+                    register.Address(register.a, self.type.size, offset=b"0"),
+                    dest,
+                ),
+            ]
+        )
+
     def store(self, source):
         if not self.extern:
             raise NotImplementedError
@@ -364,6 +332,69 @@ class GlobalVariable(Variable):
                 ),
             ]
         )
+
+
+def align(addr, alignment):
+    import math
+
+    return math.ceil(addr / alignment) * alignment
+
+
+assert align(0, 4) == 0, align(0, 4)
+assert align(0, 8) == 0, align(0, 8)
+assert align(4, 8) == 8, align(4, 8)
+assert align(8, 8) == 8, align(8, 8)
+assert align(16, 4) == 16, align(16, 4)
+assert align(32, 4) == 32, align(32, 4)
+assert align(32, 8) == 32, align(32, 8)
+
+
+class FuncMeta(Variable):
+    def __init__(self, name, type_, end_label, ctx):
+        super().__init__(name, type_)
+        self.end_label = end_label
+        self.ctx = ctx
+        self._scope = ChainMap({}, ctx.global_scope)
+        self._next_stack_offset = 0
+        self._stack_temps = []
+        self._next_stack_temp = 0
+
+    def enter_scope(self):
+        self._scope = self._scope.new_child()
+
+    def exit_scope(self):
+        self._scope = self._scope.parents
+
+    def load(self, dest):
+        return b"	leaq	%s(%rip), %s" % (self.name, dest)
+
+    def store(self, source):
+        raise XTypeError("Cannot assign to function")
+
+    @contextmanager
+    def stack_temp(self, type_):
+        import bisect
+        import operator
+
+        key = operator.attrgetter("type.size")
+
+        i = bisect.bisect_left(self._stack_temps, type_.size, key=key)
+        if i != len(self._stack_temps):
+            tmp = self._stack_temps.pop(i)
+            tmp.type = type_
+        else:
+            tmp = self.ctx.declare_variable(
+                b".tmp%s" % str(self._next_stack_temp).encode("ascii"), type_
+            )
+            self._next_stack_temp += 1
+
+        try:
+            yield tmp
+        finally:
+            bisect.insort(self._stack_temps, tmp, key=key)
+
+    def __repr__(self):
+        return f"FuncMeta(name={self.name!r}, type={self.type!r}, end_label={self.end_label!r})"  # noqa E501
 
 
 def xcompile(decls):
@@ -402,9 +433,7 @@ def compile_func_decl(ctx, decl):
     ret = compile_type(ctx, decl.ret) if decl.ret else None
     func_ty = FunctionType(params, ret)
     end_label = None if decl.is_proto else Label.create()
-    func_meta = FuncMeta(
-        decl.name.encode("ascii"), func_ty, end_label, ctx.global_scope
-    )
+    func_meta = FuncMeta(decl.name.encode("ascii"), func_ty, end_label, ctx)
     ctx.func = func_meta
 
     ctx.global_scope[decl.name] = func_meta
@@ -433,7 +462,7 @@ def compile_func_decl(ctx, decl):
     for param_ast, param_ty, arg_reg in zip(
         decl.params, params, register.argument_registers
     ):
-        var = func_meta.declare_variable(param_ast.name, param_ty)
+        var = ctx.declare_variable(param_ast.name, param_ty)
         ctx.emitln(var.store(register.Address(arg_reg, size=param_ty.size)))
 
     ctx.commentln(b"function body")
@@ -483,7 +512,7 @@ def compile_statement(ctx, stmt):
             ty = compile_type(ctx, stmt.type)
         elif stmt.initializer:
             ty = analyze_type(ctx, stmt.initializer)
-        var = ctx.func.declare_variable(stmt.name, ty)
+        var = ctx.declare_variable(stmt.name, ty)
         assert isinstance(var, LocalVariable)
         if stmt.initializer:
             compile_expr(ctx, stmt.initializer, var.addr)
@@ -564,7 +593,7 @@ def compile_expr(ctx, expr, dest):
             )
         )
     elif isinstance(expr, parse.IdentExpr):
-        var = ctx.func.resolve_variable(expr.name)
+        var = ctx.resolve_variable(expr.name)
         # FIXME: There should be some kinda move/cast operation
         # FIXME: implicitly cast variable value to destination type if
         # applicable
