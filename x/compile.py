@@ -1,4 +1,5 @@
 from collections import ChainMap
+from contextlib import contextmanager
 from x import opt, parse, register
 from x.instr import cmp, mov, movs
 
@@ -251,6 +252,8 @@ class FuncMeta(Variable):
         self.end_label = end_label
         self._scope = ChainMap({}, global_scope)
         self._next_stack_offset = 0
+        self._stack_temps = []
+        self._next_stack_temp = 0
 
     def enter_scope(self):
         self._scope = self._scope.new_child()
@@ -278,6 +281,27 @@ class FuncMeta(Variable):
 
     def store(self, source):
         raise XTypeError("Cannot assign to function")
+
+    @contextmanager
+    def stack_temp(self, type_):
+        import bisect
+        import operator
+
+        key = operator.attrgetter("type.size")
+
+        i = bisect.bisect_left(self._stack_temps, type_.size, key=key)
+        if i != len(self._stack_temps):
+            tmp = self._stack_temps.pop(i)
+            tmp.type = type_
+        else:
+            tmp = self.declare_variable(
+                b".tmp%s" % str(self._next_stack_temp).encode("ascii"), type_
+            )
+
+        try:
+            yield tmp
+        finally:
+            bisect.insort(self._stack_temps, tmp, key=key)
 
     def __repr__(self):
         return f"FuncMeta(name={self.name!r}, type={self.type!r}, end_label={self.end_label!r})"  # noqa E501
@@ -568,7 +592,8 @@ def is_logical_expr(expr):
         isinstance(expr, parse.UnaryExpr) and expr.op is parse.UnaryOp.LOGICAL_NOT
     ) or (
         isinstance(expr, parse.BinaryExpr)
-        and expr.op in (parse.BinaryOp.LOGICAL_OR, parse.BinaryOp.LOGICAL_AND)
+        and expr.op
+        in (parse.BinaryOp.EQUAL, parse.BinaryOp.LOGICAL_OR, parse.BinaryOp.LOGICAL_AND)
     )
 
 
@@ -582,6 +607,7 @@ def compile_logical_expr(ctx, expr, jump, invert=False):
     if isinstance(expr, parse.UnaryExpr) and expr.op is parse.UnaryOp.LOGICAL_NOT:
         compile_logical_expr(ctx, expr.expr, jump, invert=not invert)
     elif isinstance(expr, parse.BinaryExpr) and expr.op in (
+        parse.BinaryOp.EQUAL,
         parse.BinaryOp.LOGICAL_AND,
         parse.BinaryOp.LOGICAL_OR,
     ):
@@ -591,11 +617,29 @@ def compile_logical_expr(ctx, expr, jump, invert=False):
         ):
             compile_logical_expr(ctx, expr.left, jump, invert)
             compile_logical_expr(ctx, expr.right, jump, invert)
-        else:
+        elif (expr.op is parse.BinaryOp.LOGICAL_OR and not invert) or (
+            expr.op is parse.BinaryOp.LOGICAL_AND and invert
+        ):
             after_or = Label.create()
             compile_logical_expr(ctx, expr.left, Jump(after_or, True), invert)
             compile_logical_expr(ctx, expr.right, jump, invert)
             ctx.emitln(b"%s:" % after_or)
+        elif expr.op is parse.BinaryOp.EQUAL:
+            left_ty, right_ty = analyze_type(ctx, expr.left), analyze_type(
+                ctx, expr.right
+            )
+            if not is_same_type(left_ty, right_ty):
+                raise XTypeError(f"Cannot compare {left_ty} with {right_ty}")
+
+            assert left_ty.size == right_ty.size
+            with ctx.func.stack_temp(left_ty) as left_var:
+                compile_expr(ctx, expr.left, left_var.addr)
+                reg_a = register.Address(register.a, left_ty.size)
+                compile_expr(ctx, expr.right, reg_a)
+                ctx.emitln(b"	%s	%s, %s" % (cmp(left_ty.size), reg_a, left_var.addr))
+                ctx.emitln(b"	%s	%s" % (b"je" if jump.if_true else b"jne", jump.dest))
+        else:
+            raise NotImplementedError
     else:
         expr_ty = analyze_type(ctx, expr)
         dest = register.Address(register.a, expr_ty.size)

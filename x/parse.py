@@ -35,6 +35,7 @@ class T(Enum):
     ELSE = auto()
     EXTERN = auto()
     EQ = auto()
+    EQEQ = auto()
     FALSE = auto()
     FUNCTION = auto()
     IDENT = auto()
@@ -133,7 +134,11 @@ def tokenize(text):
             nextchar()
             yield Token(T.ELLIPSIS, start, "...")
         elif c == "=":
-            yield Token(T.EQ, start, c)
+            if peekchar() == "=":
+                c += nextchar()
+                yield Token(T.EQEQ, start, c)
+            else:
+                yield Token(T.EQ, start, c)
         elif c == "&":
             if peekchar() != "&":
                 raise UnexpectedToken(start, c)
@@ -526,14 +531,16 @@ class Assoc(Enum):
 class BinaryOp(Enum):
     LOGICAL_AND = T.ANDAND
     LOGICAL_OR = T.OROR
+    EQUAL = T.EQEQ
 
 
 precedence = dict(
     (op, prec)
     for prec, op in enumerate(
         [
-            BinaryOp.LOGICAL_OR,
+            BinaryOp.EQUAL,
             BinaryOp.LOGICAL_AND,
+            BinaryOp.LOGICAL_OR,
         ]
     )
 )
@@ -561,7 +568,7 @@ def parse_expression(it):
             prev_op = operator_stack[-1]
 
             if (op is prev_op and associativity[op] is Assoc.LEFT) or precedence[
-                operator_stack[-1]
+                prev_op
             ] < precedence[op]:
                 reduce()
 
