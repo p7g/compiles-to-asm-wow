@@ -27,6 +27,7 @@ class Peekable:
 
 
 class T(Enum):
+    AMPERSAND = auto()
     ANDAND = auto()
     BANG = auto()
     COLON = auto()
@@ -145,9 +146,10 @@ def tokenize(text):
                 yield Token(T.EQ, start, c)
         elif c == "&":
             if peekchar() != "&":
-                raise UnexpectedToken(start, c)
-            c += nextchar()
-            yield Token(T.ANDAND, start, c)
+                yield Token(T.AMPERSAND, start, c)
+            else:
+                c += nextchar()
+                yield Token(T.ANDAND, start, c)
         elif c == "|":
             if peekchar() != "|":
                 raise UnexpectedToken(start, c)
@@ -551,6 +553,7 @@ def parse_expr_statement(it):
 
 class UnaryOp(Enum):
     LOGICAL_NOT = T.BANG
+    REFERENCE = T.AMPERSAND
 
 
 class Assoc(Enum):
@@ -623,14 +626,17 @@ def parse_expression(it):
 
 
 def parse_unary_op(it):
-    if it.peek().type is T.BANG:
-        return UnaryExpr(UnaryOp(next(it).type), parse_unary_op(it))
-    else:
+    tok = it.peek()
+    try:
+        UnaryOp(tok.type)
+    except ValueError:
         expr = parse_atom(it)
         while it.peek().type is T.LPAREN:
             next(it)
             expr = parse_call_expr(it, expr)
         return expr
+    else:
+        return UnaryExpr(UnaryOp(next(it).type), parse_unary_op(it))
 
 
 def parse_atom(it):

@@ -82,11 +82,18 @@ def analyze_type(ctx, expr):
                 raise XTypeError(f"Cannot pass {arg_ty} as {param}")
         return target_ty.ret
     elif isinstance(expr, parse.UnaryExpr):
-        if expr.op is not parse.UnaryOp.LOGICAL_NOT:
-            raise NotImplementedError(expr.op)
-        return BoolType()
+        if expr.op is parse.UnaryOp.LOGICAL_NOT:
+            return BoolType()
+        elif expr.op is parse.UnaryOp.REFERENCE:
+            return PointerType(analyze_type(ctx, expr.expr))
+        else:
+            raise NotImplementedError
     elif isinstance(expr, parse.BinaryExpr):
-        if expr.op in (parse.BinaryOp.LOGICAL_AND, parse.BinaryOp.LOGICAL_OR):
+        if expr.op in (
+            parse.BinaryOp.EQUAL,
+            parse.BinaryOp.LOGICAL_AND,
+            parse.BinaryOp.LOGICAL_OR,
+        ):
             return BoolType()
         elif expr.op is parse.BinaryOp.ASSIGNMENT:
             return analyze_type(ctx, expr.right)
@@ -248,6 +255,9 @@ class Variable:
     def store(self, source):
         raise NotImplementedError
 
+    def load_addr(self, dest):
+        raise NotImplementedError
+
 
 class LocalVariable(Variable):
     def __init__(self, name, type_, stack_offset):
@@ -272,6 +282,9 @@ class LocalVariable(Variable):
                 ]
             )
         return b"	%s	%s, %s" % (mov(self.type.size), self.addr, dest)
+
+    def load_addr(self, dest):
+        return b"	leaq	%s, %s" % (self.addr, dest)
 
     def store(self, source):
         return b"	%s	%s, %s" % (
@@ -635,6 +648,10 @@ def compile_expr(ctx, expr, dest):
                         dest,
                     )
                 )
+    elif isinstance(expr, parse.UnaryExpr) and expr.op is parse.UnaryOp.REFERENCE:
+        if not is_assignment_target(expr.expr):
+            raise XTypeError(f"Cannot take address of {expr.expr!r}")
+        compile_addr_of(ctx, expr.expr, dest)
     elif isinstance(expr, parse.BinaryExpr) and expr.op is parse.BinaryOp.ASSIGNMENT:
         if not is_assignment_target(expr.left):
             raise XTypeError(f"Cannot assign to {expr.left!r}")
@@ -675,6 +692,14 @@ def compile_expr(ctx, expr, dest):
 
     else:
         raise NotImplementedError(expr)
+
+
+def compile_addr_of(ctx, expr, dest):
+    if isinstance(expr, parse.IdentExpr):
+        var = ctx.resolve_variable(expr.name)
+        ctx.emitln(var.load_addr(dest))
+    else:
+        raise NotImplementedError
 
 
 def is_assignment_target(expr):
