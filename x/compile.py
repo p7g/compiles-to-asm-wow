@@ -15,6 +15,13 @@ class Type:
     pass
 
 
+class VoidType(Type):
+    size = 0
+
+    def __str__(self):
+        return "void"
+
+
 class IntType(Type):
     def __init__(self, size, signed, from_literal=False):
         super().__init__()
@@ -114,7 +121,9 @@ def analyze_type(ctx, expr):
 
 
 def is_assignable(from_ty, to_ty):
-    if isinstance(from_ty, IntType) and isinstance(to_ty, IntType):
+    if isinstance(from_ty, VoidType) or isinstance(to_ty, VoidType):
+        return False
+    elif isinstance(from_ty, IntType) and isinstance(to_ty, IntType):
         if from_ty.size <= to_ty.size:
             return True
         elif from_ty.from_literal:
@@ -142,6 +151,8 @@ def is_same_type(a, b):
             and is_same_type(a.ret, b.ret)
         )
     elif isinstance(a, BoolType) and isinstance(b, BoolType):
+        return True
+    elif isinstance(a, VoidType) and isinstance(b, VoidType):
         return True
     else:
         return False
@@ -443,7 +454,7 @@ def compile_func_decl(ctx, decl):
 
     # Create type for function
     params = [compile_type(ctx, param.type) for param in decl.params]
-    ret = compile_type(ctx, decl.ret) if decl.ret else None
+    ret = compile_type(ctx, decl.ret) if decl.ret else VoidType()
     func_ty = FunctionType(params, ret)
     end_label = None if decl.is_proto else Label.create()
     func_meta = FuncMeta(decl.name.encode("ascii"), func_ty, end_label, ctx)
