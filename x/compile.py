@@ -1,5 +1,5 @@
 from collections import ChainMap
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from x import opt, parse, register
 from x.instr import add, cmp, mov, movs
 
@@ -237,6 +237,15 @@ class ProgramContext:
                 return self.global_scope[name]
         except KeyError:
             raise XTypeError(f"No variable named {name!r}")
+
+    @contextmanager
+    def spill(self, addr):
+        assert self.func, "Cannot spill to stack outside of function"
+        with self.func.stack_temp(IntType(addr.size, False)) as var:
+            try:
+                yield var.addr
+            finally:
+                self.emitln(var.load(addr))
 
 
 class Label:
@@ -634,18 +643,39 @@ def compile_expr(ctx, expr, dest):
         assert len(func.type.params) <= len(register.argument_registers)
         assert len(func.type.params) == len(expr.args)
 
-        for dest_reg, param, arg in zip(
-            register.argument_registers, func.type.params, expr.args
-        ):
-            # FIXME: implicitly cast arguments to parameter types if applicable
-            compile_expr(
-                ctx,
-                arg,
-                register.Address(
-                    dest_reg,
-                    size=param.size,
-                ),
+        def is_trivial(expr):
+            return isinstance(
+                expr, (parse.IdentExpr, parse.IntExpr, parse.StringExpr, parse.BoolExpr)
             )
+
+        def partition(items, key):
+            yes, no = [], []
+            for item in items:
+                if key(item):
+                    yes.append(item)
+                else:
+                    no.append(item)
+            return yes, no
+
+        # FIXME: implicitly cast arguments to parameter types if applicable
+        reg_param_arg_triples = zip(
+            register.argument_registers, func.type.params, expr.args
+        )
+        trivial_args, complex_args = partition(
+            reg_param_arg_triples, lambda triple: is_trivial(triple[2])
+        )
+
+        with ExitStack() as exit_stack:
+            # compile and spill non-trivial arguments
+            for i, (dest_reg, param, arg) in enumerate(complex_args):
+                arg_dest = register.Address(dest_reg, size=param.size)
+                if i != len(complex_args) - 1:
+                    arg_dest = exit_stack.enter_context(ctx.spill(arg_dest))
+                compile_expr(ctx, arg, arg_dest)
+
+        # compile trivial arguments
+        for dest_reg, param, arg in trivial_args:
+            compile_expr(ctx, arg, register.Address(dest_reg, size=param.size))
 
         ctx.emitln(b"	call	%s" % global_name(func.name))
         if dest is not None:
