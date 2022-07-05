@@ -43,10 +43,12 @@ class T(Enum):
     IF = auto()
     INTEGER = auto()
     LBRACE = auto()
+    LBRACKET = auto()
     LPAREN = auto()
     OROR = auto()
     PLUS = auto()
     RBRACE = auto()
+    RBRACKET = auto()
     RETURN = auto()
     RPAREN = auto()
     SEMICOLON = auto()
@@ -87,6 +89,8 @@ _one_char = {
     ",": T.COMMA,
     ":": T.COLON,
     ";": T.SEMICOLON,
+    "[": T.LBRACKET,
+    "]": T.RBRACKET,
     "{": T.LBRACE,
     "}": T.RBRACE,
 }
@@ -292,6 +296,16 @@ class CallExpr(Expr):
 
     def __repr__(self):
         return f"CallExpr({self.target!r}, {self.args})"
+
+
+class IndexExpr(Expr):
+    def __init__(self, target, index):
+        super().__init__()
+        self.target = target
+        self.index = index
+
+    def __repr__(self):
+        return f"IndexExpr({self.target!r}, {self.index!r})"
 
 
 class IdentExpr(Expr):
@@ -632,9 +646,11 @@ def parse_unary_op(it):
         UnaryOp(tok.type)
     except ValueError:
         expr = parse_atom(it)
-        while it.peek().type is T.LPAREN:
-            next(it)
-            expr = parse_call_expr(it, expr)
+        while it.peek().type in (T.LPAREN, T.LBRACKET):
+            if it.peek().type is T.LPAREN:
+                expr = parse_call_expr(it, expr)
+            elif it.peek().type is T.LBRACKET:
+                expr = parse_index_expr(it, expr)
         return expr
     else:
         return UnaryExpr(UnaryOp(next(it).type), parse_unary_op(it))
@@ -661,6 +677,7 @@ def parse_atom(it):
 
 
 def parse_call_expr(it, target):
+    _expect(next(it), T.LPAREN)
     args = []
     first = True
     while it.peek().type is not T.RPAREN:
@@ -671,6 +688,13 @@ def parse_call_expr(it, target):
         args.append(parse_expression(it))
     _expect(next(it), T.RPAREN)
     return CallExpr(target, args)
+
+
+def parse_index_expr(it, target):
+    _expect(next(it), T.LBRACKET)
+    index = parse_expression(it)
+    _expect(next(it), T.RBRACKET)
+    return IndexExpr(target, index)
 
 
 def parse_type_expr(it):

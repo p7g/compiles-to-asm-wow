@@ -88,6 +88,14 @@ def analyze_type(ctx, expr):
             if not is_assignable(arg_ty, param):
                 raise XTypeError(f"Cannot pass {arg_ty} as {param}")
         return target_ty.ret
+    elif isinstance(expr, parse.IndexExpr):
+        target_ty = analyze_type(ctx, expr.target)
+        index_ty = analyze_type(ctx, expr.index)
+        if not isinstance(target_ty, PointerType):
+            raise XTypeError(f"Can only index pointers, not {target_ty}")
+        if not isinstance(index_ty, IntType):
+            raise XTypeError(f"Pointer index must be integer, not {index_ty}")
+        return target_ty.pointee
     elif isinstance(expr, parse.UnaryExpr):
         if expr.op is parse.UnaryOp.LOGICAL_NOT:
             return BoolType()
@@ -710,6 +718,40 @@ def compile_expr(ctx, expr, dest):
             )
             dereferenced = dereferenced.with_offset(None).with_size(result_ty.size)
         ctx.emitln(b"	%s	%s, %s" % (mov(result_ty.size), dereferenced, dest))
+    elif isinstance(expr, parse.IndexExpr):
+        result_ty = analyze_type(ctx, expr)
+        index_ty = analyze_type(ctx, expr.index)
+
+        target = register.Address(register.a, 8)
+        index = register.Address(register.c, index_ty.size)
+
+        compile_expr(ctx, expr.target, target)
+
+        with ExitStack() as exit_stack:
+            if not is_trivial_expr(expr.index):
+                tmp = exit_stack.enter_context(ctx.spill(target))
+                ctx.emitln(b"	movq	%s, %s" % (target, tmp))
+            else:
+                tmp = index
+
+            compile_expr(ctx, expr.index, tmp)
+        if dest:
+            if dest.offset:
+                dest2 = register.Address(register.d, result_ty.size)
+            else:
+                dest2 = dest
+            ctx.emitln(
+                b"	%s	(%s,%s,%s), %s"
+                % (
+                    mov(result_ty.size),
+                    target,
+                    index.with_size(8),
+                    str(result_ty.size).encode("ascii"),
+                    dest2,
+                )
+            )
+            if dest.offset:
+                ctx.emitln(b"	%s	%s, %s" % (mov(result_ty.size), dest2, dest))
     elif isinstance(expr, parse.BinaryExpr) and expr.op is parse.BinaryOp.ASSIGNMENT:
         if not is_assignment_target(expr.left):
             raise XTypeError(f"Cannot assign to {expr.left!r}")
@@ -748,6 +790,39 @@ def compile_expr(ctx, expr, dest):
                 ctx.emitln(
                     b"	%s	%s, %s" % (mov(right_ty.size), reg_c, reg_a.with_offset(b"0"))
                 )
+        elif isinstance(expr.left, parse.IndexExpr):
+            result_ty = analyze_type(ctx, expr.left)
+            index_ty = analyze_type(ctx, expr.left.index)
+
+            target = register.Address(register.a, 8)
+            index = register.Address(register.c, index_ty.size)
+
+            compile_expr(ctx, expr.left.target, target)
+
+            with ExitStack() as exit_stack:
+                if not is_trivial_expr(expr.left.index):
+                    tmp = exit_stack.enter_context(ctx.spill(target))
+                    ctx.emitln(b"	movq	%s, %s" % (target, tmp))
+                else:
+                    tmp = index
+
+                compile_expr(ctx, expr.left.index, tmp)
+
+            if dest.offset:
+                source = register.Address(register.d, result_ty.size)
+                ctx.emitln(b"	%s	%s, %s" % (mov(result_ty.size), dest, source))
+            else:
+                source = dest
+            ctx.emitln(
+                b"	%s	%s, (%s,%s,%s)"
+                % (
+                    mov(result_ty.size),
+                    source,
+                    target,
+                    index.with_size(8),
+                    str(result_ty.size).encode("ascii"),
+                )
+            )
         else:
             raise NotImplementedError
     elif isinstance(expr, parse.BinaryExpr) and expr.op is parse.BinaryOp.ADDITION:
@@ -799,8 +874,10 @@ def compile_addr_of(ctx, expr, dest):
 
 
 def is_assignment_target(expr):
-    return isinstance(expr, parse.IdentExpr) or (
-        isinstance(expr, parse.UnaryExpr) and expr.op is parse.UnaryOp.DEREFERENCE
+    return (
+        isinstance(expr, parse.IdentExpr)
+        or (isinstance(expr, parse.UnaryExpr) and expr.op is parse.UnaryOp.DEREFERENCE)
+        or isinstance(expr, parse.IndexExpr)
     )
 
 
