@@ -311,10 +311,10 @@ class LocalVariable(Variable):
             return b"\n".join(
                 [
                     b"	%s	%s, %s" % (mov(self.type.size), self.addr, transient_reg),
-                    b"	%s	%s, %s" % (mov(self.type.size), transient_reg, dest),
+                    b"	%s	%s, %s" % (mov(dest.size), transient_reg, dest),
                 ]
             )
-        return b"	%s	%s, %s" % (mov(self.type.size), self.addr, dest)
+        return b"	%s	%s, %s" % (mov(dest.size), self.addr, dest)
 
     def load_addr(self, dest):
         return b"	leaq	%s, %s" % (self.addr, dest)
@@ -688,11 +688,7 @@ def compile_expr(ctx, expr, dest):
             if dest != retval_addr:
                 ctx.emitln(
                     b"	%s	%s, %s"
-                    % (
-                        mov(func.type.ret.size),
-                        retval_addr,
-                        dest,
-                    )
+                    % (mov(dest.size), retval_addr.with_size(dest.size), dest)
                 )
     elif isinstance(expr, parse.UnaryExpr) and expr.op is parse.UnaryOp.REFERENCE:
         if not is_assignment_target(expr.expr):
@@ -828,13 +824,21 @@ def compile_expr(ctx, expr, dest):
     elif isinstance(expr, parse.BinaryExpr) and expr.op is parse.BinaryOp.ADDITION:
         left_ty, right_ty = analyze_type(ctx, expr.left), analyze_type(ctx, expr.right)
         result_ty = analyze_type(ctx, expr)
-        with ctx.func.stack_temp(right_ty) as right_dest:
-            compile_expr(ctx, expr.left, dest.with_size(left_ty.size))
-            implicitly_cast(ctx, dest.with_size(left_ty.size), left_ty, result_ty)
-            compile_expr(ctx, expr.right, right_dest.addr)
-            implicitly_cast(ctx, right_dest.addr, right_ty, result_ty)
-            if dest:
-                ctx.emitln(b"	%s	%s, %s" % (add(result_ty.size), right_dest.addr, dest))
+
+        # Compile left into ax, right into cx, add to cx, move to dest
+        ax = register.Address(register.a, result_ty.size)
+        cx = dest if not dest.offset else register.Address(register.c, result_ty.size)
+
+        compile_expr(ctx, expr.left, ax)
+
+        with ExitStack() as exit_stack:
+            if not is_trivial_expr(expr.right):
+                exit_stack.enter_context(ctx.spill(ax))
+            compile_expr(ctx, expr.right, cx)
+
+        ctx.emitln(b"	%s	%s, %s" % (add(result_ty.size), ax, cx))
+        if dest and dest != cx:
+            ctx.emitln(b"	%s	%s, %s" % (mov(result_ty.size), cx, dest))
     elif is_logical_expr(expr):
         false_label = Label.create()
         after_label = Label.create()
@@ -955,15 +959,13 @@ def implicitly_cast(ctx, addr, from_ty, to_ty):
         return
 
     assert from_ty.size < to_ty.size
-    if from_ty.signed:
-        mov_instr = movs(from_ty.size, to_ty.size)
-    else:
-        mov_instr = mov(to_ty.size)
+    if not from_ty.signed:
+        return
 
     ctx.emitln(
         b"	%s	%s, %s"
         % (
-            mov_instr,
+            movs(from_ty.size, to_ty.size),
             addr,
             addr.with_size(to_ty.size),
         )
