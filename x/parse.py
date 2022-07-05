@@ -552,6 +552,7 @@ def parse_expr_statement(it):
 
 
 class UnaryOp(Enum):
+    DEREFERENCE = T.STAR
     LOGICAL_NOT = T.BANG
     REFERENCE = T.AMPERSAND
 

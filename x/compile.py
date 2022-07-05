@@ -93,6 +93,11 @@ def analyze_type(ctx, expr):
             return BoolType()
         elif expr.op is parse.UnaryOp.REFERENCE:
             return PointerType(analyze_type(ctx, expr.expr))
+        elif expr.op is parse.UnaryOp.DEREFERENCE:
+            expr_ty = analyze_type(ctx, expr.expr)
+            if not isinstance(expr_ty, PointerType):
+                raise XTypeError(f"Can only dereference pointers, not {expr_ty}")
+            return expr_ty.pointee
         else:
             raise NotImplementedError
     elif isinstance(expr, parse.BinaryExpr):
@@ -649,26 +654,12 @@ def compile_expr(ctx, expr, dest):
         assert len(func.type.params) <= len(register.argument_registers)
         assert len(func.type.params) == len(expr.args)
 
-        def is_trivial(expr):
-            return isinstance(
-                expr, (parse.IdentExpr, parse.IntExpr, parse.StringExpr, parse.BoolExpr)
-            )
-
-        def partition(items, key):
-            yes, no = [], []
-            for item in items:
-                if key(item):
-                    yes.append(item)
-                else:
-                    no.append(item)
-            return yes, no
-
         # FIXME: implicitly cast arguments to parameter types if applicable
         reg_param_arg_triples = zip(
             register.argument_registers, func.type.params, expr.args
         )
         trivial_args, complex_args = partition(
-            reg_param_arg_triples, lambda triple: is_trivial(triple[2])
+            reg_param_arg_triples, lambda triple: is_trivial_expr(triple[2])
         )
 
         with ExitStack() as exit_stack:
@@ -699,24 +690,66 @@ def compile_expr(ctx, expr, dest):
         if not is_assignment_target(expr.expr):
             raise XTypeError(f"Cannot take address of {expr.expr!r}")
         compile_addr_of(ctx, expr.expr, dest)
+    elif isinstance(expr, parse.UnaryExpr) and expr.op is parse.UnaryOp.DEREFERENCE:
+        result_ty = analyze_type(ctx, expr)
+        result = dest.with_size(8)
+        compile_expr(ctx, expr.expr, result)
+        if result.offset:
+            rax = register.Address(register.a, 8)
+            ctx.emitln(b"	movq	%s, %s" % (result, rax))
+            result = rax
+        dereferenced = result.with_offset(b"0")
+        if dest.offset:
+            ctx.emitln(
+                b"	%s	%s, %s"
+                % (
+                    mov(result_ty.size),
+                    dereferenced,
+                    dereferenced.with_offset(None).with_size(result_ty.size),
+                )
+            )
+            dereferenced = dereferenced.with_offset(None).with_size(result_ty.size)
+        ctx.emitln(b"	%s	%s, %s" % (mov(result_ty.size), dereferenced, dest))
     elif isinstance(expr, parse.BinaryExpr) and expr.op is parse.BinaryOp.ASSIGNMENT:
         if not is_assignment_target(expr.left):
             raise XTypeError(f"Cannot assign to {expr.left!r}")
 
         right_ty = analyze_type(ctx, expr.right)
-        assert isinstance(expr.left, parse.IdentExpr)
-        var = ctx.func.resolve_variable(expr.left.name)
+        left_ty = analyze_type(ctx, expr.left)
 
-        dest = dest or register.Address(register.a, right_ty.size)
-
-        compile_expr(ctx, expr.right, dest)
-
-        if not is_assignable(right_ty, var.type):
+        if not is_assignable(right_ty, left_ty):
             raise XTypeError(
-                f"Cannot assign value of type {right_ty} to {expr.left.name}, which is {var.type}"  # noqa E501
+                f"Cannot assign value of type {right_ty} to {expr.left.name}, which is {left_ty}"  # noqa E501
             )
 
-        ctx.emitln(var.store(dest))
+        dest = dest or register.Address(register.d, right_ty.size)
+        compile_expr(ctx, expr.right, dest)
+
+        if isinstance(expr.left, parse.IdentExpr):
+            var = ctx.resolve_variable(expr.left.name)
+            ctx.emitln(var.store(dest))
+        elif (
+            isinstance(expr.left, parse.UnaryExpr)
+            and expr.left.op is parse.UnaryOp.DEREFERENCE
+        ):
+            with ExitStack() as exit_stack:
+                if not dest.offset and not is_trivial_expr(expr.left.expr):
+                    saved_result = exit_stack.enter_context(
+                        ctx.func.stack_temp(right_ty)
+                    ).addr
+                    ctx.emitln(b"	%s	%s, %s" % (mov(right_ty.size), dest, saved_result))
+                else:
+                    saved_result = dest
+
+                reg_a = register.Address(register.a, 8)
+                compile_expr(ctx, expr.left.expr, reg_a)
+                reg_c = register.Address(register.c, right_ty.size)
+                ctx.emitln(b"	%s	%s, %s" % (mov(right_ty.size), saved_result, reg_c))
+                ctx.emitln(
+                    b"	%s	%s, %s" % (mov(right_ty.size), reg_c, reg_a.with_offset(b"0"))
+                )
+        else:
+            raise NotImplementedError
     elif isinstance(expr, parse.BinaryExpr) and expr.op is parse.BinaryOp.ADDITION:
         left_ty, right_ty = analyze_type(ctx, expr.left), analyze_type(ctx, expr.right)
         result_ty = analyze_type(ctx, expr)
@@ -741,6 +774,22 @@ def compile_expr(ctx, expr, dest):
         raise NotImplementedError(expr)
 
 
+def is_trivial_expr(expr):
+    return isinstance(
+        expr, (parse.IdentExpr, parse.IntExpr, parse.StringExpr, parse.BoolExpr)
+    )
+
+
+def partition(items, key):
+    yes, no = [], []
+    for item in items:
+        if key(item):
+            yes.append(item)
+        else:
+            no.append(item)
+    return yes, no
+
+
 def compile_addr_of(ctx, expr, dest):
     if isinstance(expr, parse.IdentExpr):
         var = ctx.resolve_variable(expr.name)
@@ -750,7 +799,9 @@ def compile_addr_of(ctx, expr, dest):
 
 
 def is_assignment_target(expr):
-    return isinstance(expr, parse.IdentExpr)
+    return isinstance(expr, parse.IdentExpr) or (
+        isinstance(expr, parse.UnaryExpr) and expr.op is parse.UnaryOp.DEREFERENCE
+    )
 
 
 def is_logical_expr(expr):
