@@ -307,6 +307,14 @@ class LocalVariable(Variable):
         return b"	leaq	%s, %s" % (self.addr, dest)
 
     def store(self, source):
+        if source.offset:
+            transient_reg = register.Address(register.a, self.type.size)
+            return b"\n".join(
+                [
+                    b"	%s	%s, %s" % (mov(self.type.size), source, transient_reg),
+                    b"	%s	%s, %s" % (mov(self.type.size), transient_reg, self.addr),
+                ]
+            )
         return b"	%s	%s, %s" % (
             mov(self.type.size),
             source,
