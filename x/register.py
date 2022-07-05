@@ -177,3 +177,6 @@ class Address:
 
     def with_size(self, size):
         return Address(self.reg, size, self.offset)
+
+    def with_offset(self, offset):
+        return Address(self.reg, self.size, offset)

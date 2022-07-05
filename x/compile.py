@@ -346,15 +346,13 @@ class GlobalVariable(Variable):
     def load_addr(self, dest):
         if not self.extern:
             raise NotImplementedError
+
+        tmp = dest.with_size(8) if not dest.offset else register.Address(register.a, 8)
+
         return b"\n".join(
             [
-                b"	movq	%s@GOTPCREL(%%rip), %s"
-                % (global_name(self.name), register.Address(register.a, 8)),
-                b"	leaq	%s, %s"
-                % (
-                    register.Address(register.a, self.type.size, offset=b"0"),
-                    dest,
-                ),
+                b"	movq	%s@GOTPCREL(%%rip), %s" % (global_name(self.name), tmp),
+                b"	leaq	%s, %s" % (tmp.with_offset(b"0"), dest),
             ]
         )
 
@@ -369,7 +367,7 @@ class GlobalVariable(Variable):
                 % (
                     mov(self.type.size),
                     source,
-                    register.Address(register.a, self.type.size, offset=0),
+                    register.Address(register.a, self.type.size, offset=b"0"),
                 ),
             ]
         )
