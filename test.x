@@ -12,10 +12,9 @@ function mul(a: i32, b: i32): i32 {
 }
 
 function main(): i32 {
-    var intsize = 4;
     var numints = 10;
 
-    var ints = malloc(mul(intsize, numints));
+    var ints = malloc(mul(sizeof(type i32), numints));
     var i = 0;
     while !(i == 10) {
         ints[i] = i;

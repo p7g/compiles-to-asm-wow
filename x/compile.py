@@ -70,6 +70,8 @@ def analyze_type(ctx, expr):
             raise XTypeError(f"No variable named {expr.name!r} is in scope")
     elif isinstance(expr, parse.IntExpr):
         return IntType(4, signed=True, from_literal=True)
+    elif isinstance(expr, parse.SizeofExpr):
+        return IntType(8, signed=False, from_literal=True)
     elif isinstance(expr, parse.BoolExpr):
         return BoolType()
     elif isinstance(expr, parse.StringExpr):
@@ -651,6 +653,15 @@ def compile_expr(ctx, expr, dest):
         # applicable
         ctx.emitln(var.load(dest))
         ctx.comment(expr.name.encode("ascii"))
+    elif isinstance(expr, parse.SizeofExpr):
+        if isinstance(expr.operand, parse.TypeExpr):
+            ty = compile_type(ctx, expr.operand)
+        elif isinstance(expr.operand, parse.Expr):
+            ty = analyze_type(expr.operand)
+        else:
+            raise NotImplementedError
+        ctx.emitln(b"	%s	%s, %s" % (mov(dest.size), register.Immediate(ty.size), dest))
+        ctx.comment(repr(expr).encode("ascii"))
     elif isinstance(expr, parse.CallExpr):
         # TODO: Function pointers
         if not isinstance(expr.target, parse.IdentExpr):

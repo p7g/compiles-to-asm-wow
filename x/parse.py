@@ -53,6 +53,7 @@ class T(Enum):
     RETURN = auto()
     RPAREN = auto()
     SEMICOLON = auto()
+    SIZEOF = auto()
     STAR = auto()
     STRING = auto()
     TRUE = auto()
@@ -102,6 +103,7 @@ _keywords = {
     "function": T.FUNCTION,
     "if": T.IF,
     "return": T.RETURN,
+    "sizeof": T.SIZEOF,
     "true": T.TRUE,
     "var": T.VAR,
     "while": T.WHILE,
@@ -347,6 +349,15 @@ class StringExpr(Expr):
 
     def __repr__(self):
         return f"StringExpr({self.text!r})"
+
+
+class SizeofExpr(Expr):
+    def __init__(self, operand):
+        super().__init__()
+        self.operand = operand
+
+    def __repr__(self):
+        return f"SizeofExpr({self.operand!r})"
 
 
 class TypeExpr:
@@ -676,6 +687,24 @@ def parse_atom(it):
         return StringExpr(next(it).text[1:-1])
     elif ty in (T.TRUE, T.FALSE):
         return BoolExpr(next(it).type is T.TRUE)
+    elif ty is T.SIZEOF:
+        next(it)
+        _expect(next(it), T.LPAREN)
+        type_tok = _expect(next(it), T.IDENT)
+        type_ = type_tok.text
+        if type_ not in ("type", "val"):
+            raise ParseError(f"Expected either 'val' or 'type', but got {type_.text}")
+
+        if type_ == "type":
+            operand = parse_type_expr(it)
+        elif type_ == "val":
+            operand = parse_expression(it)
+        else:
+            raise NotImplementedError
+
+        _expect(next(it), T.RPAREN)
+
+        return SizeofExpr(operand)
     else:
         tok = next(it)
         raise UnexpectedToken(tok.pos, tok.text)
