@@ -2,14 +2,14 @@ extern function fopen(name: *u8, mode: *u8): *void;
 extern function fclose(fp: *void);
 extern function fgetc(fp: *void): i32;
 extern function fputc(c: i32, fp: *void);
-extern function fprintf(fp: *void, fmt: *u8, prog: *u8, nl: i32);
+extern function fprintf(fp: *void, fmt: *u8, prog: *u8);
 extern function perror(msg: *u8);
 extern var __stdoutp: *void;
 extern var __stderrp: *void;
 
 function main(argc: i32, argv: **u8): i32 {
     if argc != 2 {
-        fprintf(__stderrp, "usage: %s FILE%c", argv[0], 10);
+        fprintf(__stderrp, "usage: %s FILE\n", argv[0]);
         return 1;
     }
 

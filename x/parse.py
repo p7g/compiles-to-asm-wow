@@ -109,6 +109,11 @@ _keywords = {
     "while": T.WHILE,
 }
 
+_escape_sequences = {
+    "n": "\n",
+    "t": "\t",
+}
+
 
 def tokenize(text):
     chars = Peekable(iter(text))
@@ -175,7 +180,12 @@ def tokenize(text):
             yield Token(T.OROR, start, c)
         elif c == '"':
             while peekchar() != '"':
-                c += nextchar()
+                c2 = nextchar()
+                if c2 == "\\":
+                    c2 = nextchar()
+                    c += _escape_sequences.get(c2, c2)
+                else:
+                    c += c2
             c += nextchar()
             yield Token(T.STRING, start, c)
         elif c.isalpha() or c == "_":
