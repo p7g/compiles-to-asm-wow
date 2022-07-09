@@ -47,6 +47,7 @@ class T(Enum):
     LBRACE = auto()
     LBRACKET = auto()
     LPAREN = auto()
+    NULL = auto()
     OROR = auto()
     PLUS = auto()
     PLUSEQ = auto()
@@ -103,6 +104,7 @@ _keywords = {
     "false": T.FALSE,
     "function": T.FUNCTION,
     "if": T.IF,
+    "null": T.NULL,
     "return": T.RETURN,
     "sizeof": T.SIZEOF,
     "true": T.TRUE,
@@ -332,6 +334,11 @@ class CallExpr(Expr):
 
     def __repr__(self):
         return f"CallExpr({self.target!r}, {self.args})"
+
+
+class NullExpr(Expr):
+    def __repr__(self):
+        return "NullExpr"
 
 
 class IndexExpr(Expr):
@@ -718,6 +725,9 @@ def parse_atom(it):
         expr = parse_expression(it)
         _expect(next(it), T.RPAREN)
         return expr
+    elif ty is T.NULL:
+        next(it)
+        return NullExpr()
     elif ty is T.INTEGER:
         return IntExpr(int(next(it).text))
     elif ty is T.IDENT:

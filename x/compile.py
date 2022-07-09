@@ -68,6 +68,8 @@ def analyze_type(ctx, expr):
             return ctx.resolve_variable(expr.name).type
         except XTypeError:
             raise XTypeError(f"No variable named {expr.name!r} is in scope")
+    elif isinstance(expr, parse.NullExpr):
+        return PointerType(VoidType())
     elif isinstance(expr, parse.IntExpr):
         return IntType(4, signed=True, from_literal=True)
     elif isinstance(expr, parse.SizeofExpr):
@@ -638,6 +640,11 @@ def compile_expr(ctx, expr, dest):
                 dest,
             )
         )
+    elif isinstance(expr, parse.NullExpr):
+        if dest is None:
+            return
+        ctx.emitln(b"	movq	$0, %s" % dest)
+        ctx.comment(b"null")
     elif isinstance(expr, parse.StringExpr):
         if dest is None:
             return

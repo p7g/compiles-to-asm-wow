@@ -13,7 +13,9 @@ function main(argc: i32, argv: **u8): i32 {
         return 1;
     }
 
-    var f = fopen(argv[1], "r");
+    var f = null;
+
+    f = fopen(argv[1], "r");
     if !f {
         perror("fopen");
         return 1;
