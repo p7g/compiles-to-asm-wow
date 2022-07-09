@@ -31,6 +31,7 @@ class T(Enum):
     ANDAND = auto()
     BANG = auto()
     BANGEQ = auto()
+    CHAR = auto()
     COLON = auto()
     COMMA = auto()
     ELLIPSIS = auto()
@@ -188,6 +189,17 @@ def tokenize(text):
                     c += c2
             c += nextchar()
             yield Token(T.STRING, start, c)
+        elif c == "'":
+            c2 = nextchar()
+            if c2 == "\\":
+                c2 = nextchar()
+                c += _escape_sequences.get(c2, c2)
+            else:
+                c += c2
+            if peekchar() != "'":
+                raise UnexpectedToken(pos, peekchar())
+            c += nextchar()
+            yield Token(T.CHAR, start, c)
         elif c.isalpha() or c == "_":
             while peekchar().isalnum() or peekchar() == "_":
                 c += nextchar()
@@ -365,6 +377,15 @@ class StringExpr(Expr):
 
     def __repr__(self):
         return f"StringExpr({self.text!r})"
+
+
+class CharExpr(Expr):
+    def __init__(self, text):
+        super().__init__()
+        self.text = text
+
+    def __repr__(self):
+        return f"CharExpr({self.text!r})"
 
 
 class SizeofExpr(Expr):
@@ -703,6 +724,8 @@ def parse_atom(it):
         return IdentExpr(next(it).text)
     elif ty is T.STRING:
         return StringExpr(next(it).text[1:-1])
+    elif ty is T.CHAR:
+        return CharExpr(next(it).text[1:-1])
     elif ty in (T.TRUE, T.FALSE):
         return BoolExpr(next(it).type is T.TRUE)
     elif ty is T.SIZEOF:

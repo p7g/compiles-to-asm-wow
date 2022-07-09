@@ -76,6 +76,8 @@ def analyze_type(ctx, expr):
         return BoolType()
     elif isinstance(expr, parse.StringExpr):
         return PointerType(IntType(1, signed=False))
+    elif isinstance(expr, parse.CharExpr):
+        return ctx.named_types["char"]
     elif isinstance(expr, parse.CallExpr):
         target_ty = analyze_type(ctx, expr.target)
         if not isinstance(target_ty, FunctionType):
@@ -186,6 +188,7 @@ class ProgramContext:
         self.strings = []
         self.named_types = {
             "bool": BoolType(),
+            "char": IntType(1, signed=False),  # FIXME: unicode?
             "i8": IntType(1, signed=True),
             "u8": IntType(1, signed=False),
             "i16": IntType(2, signed=True),
@@ -647,6 +650,18 @@ def compile_expr(ctx, expr, dest):
                 dest,
             )
         )
+    elif isinstance(expr, parse.CharExpr):
+        if dest is None:
+            return
+        ctx.emitln(
+            b"	%s	%s, %s"
+            % (
+                mov(dest.size),
+                register.Immediate(ord(expr.text)),
+                dest,
+            )
+        )
+        ctx.comment(repr(expr.text).encode("ascii"))
     elif isinstance(expr, parse.IdentExpr):
         var = ctx.resolve_variable(expr.name)
         # FIXME: There should be some kinda move/cast operation
