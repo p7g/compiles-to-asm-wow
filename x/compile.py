@@ -98,10 +98,10 @@ def analyze_type(ctx, expr):
         if not isinstance(index_ty, IntType):
             raise XTypeError(f"Pointer index must be integer, not {index_ty}")
         return target_ty.pointee
+    elif is_logical_expr(expr):
+        return BoolType()
     elif isinstance(expr, parse.UnaryExpr):
-        if expr.op is parse.UnaryOp.LOGICAL_NOT:
-            return BoolType()
-        elif expr.op is parse.UnaryOp.REFERENCE:
+        if expr.op is parse.UnaryOp.REFERENCE:
             return PointerType(analyze_type(ctx, expr.expr))
         elif expr.op is parse.UnaryOp.DEREFERENCE:
             expr_ty = analyze_type(ctx, expr.expr)
@@ -111,13 +111,7 @@ def analyze_type(ctx, expr):
         else:
             raise NotImplementedError
     elif isinstance(expr, parse.BinaryExpr):
-        if expr.op in (
-            parse.BinaryOp.EQUAL,
-            parse.BinaryOp.LOGICAL_AND,
-            parse.BinaryOp.LOGICAL_OR,
-        ):
-            return BoolType()
-        elif expr.op in (parse.BinaryOp.ASSIGNMENT, parse.BinaryOp.ADDITION_ASSIGNMENT):
+        if expr.op in (parse.BinaryOp.ASSIGNMENT, parse.BinaryOp.ADDITION_ASSIGNMENT):
             return analyze_type(ctx, expr.left)
         elif expr.op is parse.BinaryOp.ADDITION:
             left_ty, right_ty = analyze_type(ctx, expr.left), analyze_type(
@@ -969,7 +963,12 @@ def is_logical_expr(expr):
     ) or (
         isinstance(expr, parse.BinaryExpr)
         and expr.op
-        in (parse.BinaryOp.EQUAL, parse.BinaryOp.LOGICAL_OR, parse.BinaryOp.LOGICAL_AND)
+        in (
+            parse.BinaryOp.EQUAL,
+            parse.BinaryOp.INEQUAL,
+            parse.BinaryOp.LOGICAL_OR,
+            parse.BinaryOp.LOGICAL_AND,
+        )
     )
 
 
@@ -984,6 +983,7 @@ def compile_logical_expr(ctx, expr, jump, invert=False):
         compile_logical_expr(ctx, expr.expr, jump, invert=not invert)
     elif isinstance(expr, parse.BinaryExpr) and expr.op in (
         parse.BinaryOp.EQUAL,
+        parse.BinaryOp.INEQUAL,
         parse.BinaryOp.LOGICAL_AND,
         parse.BinaryOp.LOGICAL_OR,
     ):
@@ -1000,7 +1000,7 @@ def compile_logical_expr(ctx, expr, jump, invert=False):
             compile_logical_expr(ctx, expr.left, Jump(after_or, True), invert)
             compile_logical_expr(ctx, expr.right, jump, invert)
             ctx.emitln(b"%s:" % after_or)
-        elif expr.op is parse.BinaryOp.EQUAL:
+        elif expr.op in (parse.BinaryOp.EQUAL, parse.BinaryOp.INEQUAL):
             left_ty, right_ty = analyze_type(ctx, expr.left), analyze_type(
                 ctx, expr.right
             )
@@ -1014,7 +1014,13 @@ def compile_logical_expr(ctx, expr, jump, invert=False):
                 compile_expr(ctx, expr.right, reg_a)
                 ctx.emitln(b"	%s	%s, %s" % (cmp(left_ty.size), reg_a, left_var.addr))
                 ctx.emitln(
-                    b"	%s	%s" % (b"je" if jump.if_true ^ invert else b"jne", jump.dest)
+                    b"	%s	%s"
+                    % (
+                        b"je"
+                        if jump.if_true ^ invert ^ (expr.op is parse.BinaryOp.INEQUAL)
+                        else b"jne",
+                        jump.dest,
+                    )
                 )
         else:
             raise NotImplementedError

@@ -16,12 +16,12 @@ function main(): i32 {
 
     var ints = malloc(mul(sizeof(type i32), numints));
     var i = -1;
-    while !(i == 9) {
+    while i != 9 {
         ints[i] = (i += 1);
     }
 
     i = 0;
-    while !(i == 10) {
+    while i != 10 {
         printf("%d%c", ints[i], 32);
         i += 1;
     }

@@ -30,6 +30,7 @@ class T(Enum):
     AMPERSAND = auto()
     ANDAND = auto()
     BANG = auto()
+    BANGEQ = auto()
     COLON = auto()
     COMMA = auto()
     ELLIPSIS = auto()
@@ -83,7 +84,6 @@ class ParamsAfterEllipsis(ParseError):
 
 
 _one_char = {
-    "!": T.BANG,
     "(": T.LPAREN,
     ")": T.RPAREN,
     "*": T.STAR,
@@ -134,6 +134,12 @@ def tokenize(text):
 
         if c in _one_char:
             yield Token(_one_char[c], start, c)
+        elif c == "!":
+            if peekchar() == "=":
+                c += nextchar()
+                yield Token(T.BANGEQ, start, c)
+            else:
+                yield Token(T.BANG, start, c)
         elif c == "+":
             if peekchar() == "=":
                 c += nextchar()
@@ -600,11 +606,13 @@ class BinaryOp(Enum):
     LOGICAL_AND = T.ANDAND
     LOGICAL_OR = T.OROR
     EQUAL = T.EQEQ
+    INEQUAL = T.BANGEQ
 
 
 precedence = {
     BinaryOp.ADDITION: 1,
     BinaryOp.EQUAL: 2,
+    BinaryOp.INEQUAL: 2,
     BinaryOp.LOGICAL_AND: 3,
     BinaryOp.LOGICAL_OR: 4,
     BinaryOp.ASSIGNMENT: 5,
