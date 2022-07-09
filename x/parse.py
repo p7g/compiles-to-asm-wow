@@ -60,6 +60,7 @@ class T(Enum):
     STAR = auto()
     STRING = auto()
     TRUE = auto()
+    TYPE = auto()
     VAR = auto()
     WHILE = auto()
 
@@ -108,6 +109,7 @@ _keywords = {
     "return": T.RETURN,
     "sizeof": T.SIZEOF,
     "true": T.TRUE,
+    "type": T.TYPE,
     "var": T.VAR,
     "while": T.WHILE,
 }
@@ -233,6 +235,15 @@ class FuncDecl(Decl):
 
     def __repr__(self):
         return f"FuncDecl({self.name!r}, {self.params}, {self.ret!r}, {self.body!r})"
+
+
+class ExternTypeDecl(Decl):
+    def __init__(self, name):
+        super().__init__()
+        self.name = name
+
+    def __repr__(self):
+        return f"ExternTypeDecl({self.name!r})"
 
 
 class Stmt:
@@ -463,6 +474,8 @@ def parse_extern_decl(it):
         yield parse_function_proto(it)
     elif ty is T.VAR:
         yield parse_extern_var_decl(it)
+    elif ty is T.TYPE:
+        yield parse_extern_type_decl(it)
     else:
         raise UnexpectedToken(ty)
 
@@ -574,6 +587,13 @@ def parse_extern_var_decl(it):
     type_ = parse_type_expr(it)
     _expect(next(it), T.SEMICOLON)
     return ExternVarDecl(name, type_)
+
+
+def parse_extern_type_decl(it):
+    _expect(next(it), T.TYPE)
+    name_tok = _expect(next(it), T.IDENT)
+    _expect(next(it), T.SEMICOLON)
+    return ExternTypeDecl(name_tok.text)
 
 
 def parse_if_statement(it):
@@ -741,17 +761,19 @@ def parse_atom(it):
     elif ty is T.SIZEOF:
         next(it)
         _expect(next(it), T.LPAREN)
-        type_tok = _expect(next(it), T.IDENT)
-        type_ = type_tok.text
-        if type_ not in ("type", "val"):
-            raise ParseError(f"Expected either 'val' or 'type', but got {type_.text}")
 
-        if type_ == "type":
+        type_tok = next(it)
+        if type_tok.type is not T.TYPE and (
+            type_tok.type is not T.IDENT or type_tok.text != "val"
+        ):
+            raise ParseError(
+                f"Expected either 'val' or 'type', but got {type_tok.text}"
+            )
+
+        if type_tok.type is T.TYPE:
             operand = parse_type_expr(it)
-        elif type_ == "val":
-            operand = parse_expression(it)
         else:
-            raise NotImplementedError
+            operand = parse_expression(it)
 
         _expect(next(it), T.RPAREN)
 

@@ -22,6 +22,19 @@ class VoidType(Type):
         return "void"
 
 
+class OpaqueType(Type):
+    def __init__(self, name):
+        super().__init__()
+        self.name = name
+
+    def __str__(self):
+        return self.name
+
+    @property
+    def size(self):
+        raise XTypeError("Opaque types have unknown size")
+
+
 class IntType(Type):
     def __init__(self, size, signed, from_literal=False):
         super().__init__()
@@ -173,6 +186,8 @@ def is_same_type(a, b):
         return True
     elif isinstance(a, VoidType) and isinstance(b, VoidType):
         return True
+    elif isinstance(a, OpaqueType):
+        return a is b
     else:
         return False
 
@@ -467,6 +482,8 @@ def xcompile(decls):
             compile_func_decl(ctx, decl)
         elif isinstance(decl, parse.AbstractVarDecl):
             compile_global_var_decl(ctx, decl)
+        elif isinstance(decl, parse.ExternTypeDecl):
+            ctx.named_types[decl.name] = OpaqueType(decl.name)
 
     if ctx.strings:
         ctx.emitln(b"")
