@@ -774,10 +774,10 @@ def compile_expr(ctx, expr, dest):
                 f"Cannot assign value of type {right_ty} to {expr.left}, which is {left_ty}"  # noqa E501
             )
 
-        dest = dest or register.Address(register.d, right_ty.size)
-        compile_expr(ctx, expr.right, dest)
+        rhs = register.Address(register.d, right_ty.size)
+        compile_expr(ctx, expr.right, rhs)
 
-        compile_assignment_target(ctx, expr.left, dest, op=assignment_op(expr.op))
+        compile_assignment(ctx, expr.left, rhs, dest, op=assignment_op(expr.op))
     elif isinstance(expr, parse.BinaryExpr) and expr.op is parse.BinaryOp.ADDITION:
         left_ty, right_ty = analyze_type(ctx, expr.left), analyze_type(ctx, expr.right)
         result_ty = analyze_type(ctx, expr)
@@ -819,12 +819,14 @@ def assignment_op(op):
         raise NotImplementedError(op)
 
 
-def compile_assignment_target(ctx, expr, src, op=mov):
+def compile_assignment(ctx, expr, src, dest, op=mov):
     dest_ty = analyze_type(ctx, expr)
 
     if isinstance(expr, parse.IdentExpr):
         var = ctx.resolve_variable(expr.name)
         ctx.emitln(var.store(src, op=op))
+        if dest:
+            ctx.emitln(var.load(dest))
     elif isinstance(expr, parse.UnaryExpr) and expr.op is parse.UnaryOp.DEREFERENCE:
         with ExitStack() as exit_stack:
             if not src.offset and not is_trivial_expr(expr.expr):
@@ -842,6 +844,30 @@ def compile_assignment_target(ctx, expr, src, op=mov):
             ctx.emitln(
                 b"	%s	%s, %s" % (op(dest_ty.size), reg_c, reg_a.with_offset(b"0"))
             )
+
+            if dest:
+                if dest.offset:
+                    ctx.emitln(
+                        b"	%s	%s, %s"
+                        % (
+                            mov(dest_ty.size),
+                            reg_a.with_offset(b"0"),
+                            reg_a.with_size(dest_ty.size),
+                        )
+                    )
+                    ctx.emitln(
+                        b"	%s	%s, %s"
+                        % (mov(dest_ty.size), reg_a.with_size(dest_ty.size), dest)
+                    )
+                else:
+                    ctx.emitln(
+                        b"	%s	%s, %s"
+                        % (
+                            mov(dest_ty.size),
+                            reg_a.with_offset(b"0"),
+                            dest,
+                        )
+                    )
     elif isinstance(expr, parse.IndexExpr):
         result_ty = analyze_type(ctx, expr)
         index_ty = analyze_type(ctx, expr.index)
@@ -875,6 +901,32 @@ def compile_assignment_target(ctx, expr, src, op=mov):
                 str(result_ty.size).encode("ascii"),
             )
         )
+
+        if dest:
+            reg_d = register.Address(register.d, result_ty.size)
+            if dest.offset:
+                ctx.emitln(
+                    b"	%s	(%s,%s,%s), %s"
+                    % (
+                        mov(result_ty.size),
+                        target,
+                        index.with_size(8),
+                        str(result_ty.size).encode("ascii"),
+                        reg_d,
+                    )
+                )
+                ctx.emitln(b"	%s	%s, %s" % (mov(result_ty.size), reg_d, dest))
+            else:
+                ctx.emitln(
+                    b"	%s	(%s,%s,%s), %s"
+                    % (
+                        mov(result_ty.size),
+                        target,
+                        index.with_size(8),
+                        str(result_ty.size).encode("ascii"),
+                        dest,
+                    )
+                )
     else:
         raise NotImplementedError
 

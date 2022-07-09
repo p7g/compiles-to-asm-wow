@@ -15,10 +15,9 @@ function main(): i32 {
     var numints = 10;
 
     var ints = malloc(mul(sizeof(type i32), numints));
-    var i = 0;
-    while !(i == 10) {
-        ints[i] = i;
-        i += 1;
+    var i = -1;
+    while !(i == 9) {
+        ints[i] = (i += 1);
     }
 
     i = 0;
