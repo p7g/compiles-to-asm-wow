@@ -115,8 +115,8 @@ def analyze_type(ctx, expr):
             parse.BinaryOp.LOGICAL_OR,
         ):
             return BoolType()
-        elif expr.op is parse.BinaryOp.ASSIGNMENT:
-            return analyze_type(ctx, expr.right)
+        elif expr.op in (parse.BinaryOp.ASSIGNMENT, parse.BinaryOp.ADDITION_ASSIGNMENT):
+            return analyze_type(ctx, expr.left)
         elif expr.op is parse.BinaryOp.ADDITION:
             left_ty, right_ty = analyze_type(ctx, expr.left), analyze_type(
                 ctx, expr.right
@@ -319,17 +319,17 @@ class LocalVariable(Variable):
     def load_addr(self, dest):
         return b"	leaq	%s, %s" % (self.addr, dest)
 
-    def store(self, source):
+    def store(self, source, op=mov):
         if source.offset:
             transient_reg = register.Address(register.a, self.type.size)
             return b"\n".join(
                 [
                     b"	%s	%s, %s" % (mov(self.type.size), source, transient_reg),
-                    b"	%s	%s, %s" % (mov(self.type.size), transient_reg, self.addr),
+                    b"	%s	%s, %s" % (op(self.type.size), transient_reg, self.addr),
                 ]
             )
         return b"	%s	%s, %s" % (
-            mov(self.type.size),
+            op(self.type.size),
             source,
             self.addr,
         )
@@ -369,7 +369,7 @@ class GlobalVariable(Variable):
             ]
         )
 
-    def store(self, source):
+    def store(self, source, op=mov):
         if not self.extern:
             raise NotImplementedError
         return b"\n".join(
@@ -378,7 +378,7 @@ class GlobalVariable(Variable):
                 % (global_name(self.name), register.Address(register.a, 8)),
                 b"	%s	%s, %s"
                 % (
-                    mov(self.type.size),
+                    op(self.type.size),
                     source,
                     register.Address(register.a, self.type.size, offset=b"0"),
                 ),
@@ -748,7 +748,10 @@ def compile_expr(ctx, expr, dest):
             )
             if dest.offset:
                 ctx.emitln(b"	%s	%s, %s" % (mov(result_ty.size), dest2, dest))
-    elif isinstance(expr, parse.BinaryExpr) and expr.op is parse.BinaryOp.ASSIGNMENT:
+    elif isinstance(expr, parse.BinaryExpr) and expr.op in (
+        parse.BinaryOp.ASSIGNMENT,
+        parse.BinaryOp.ADDITION_ASSIGNMENT,
+    ):
         if not is_assignment_target(expr.left):
             raise XTypeError(f"Cannot assign to {expr.left!r}")
 
@@ -757,70 +760,13 @@ def compile_expr(ctx, expr, dest):
 
         if not is_assignable(right_ty, left_ty):
             raise XTypeError(
-                f"Cannot assign value of type {right_ty} to {expr.left.name}, which is {left_ty}"  # noqa E501
+                f"Cannot assign value of type {right_ty} to {expr.left}, which is {left_ty}"  # noqa E501
             )
 
         dest = dest or register.Address(register.d, right_ty.size)
         compile_expr(ctx, expr.right, dest)
 
-        if isinstance(expr.left, parse.IdentExpr):
-            var = ctx.resolve_variable(expr.left.name)
-            ctx.emitln(var.store(dest))
-        elif (
-            isinstance(expr.left, parse.UnaryExpr)
-            and expr.left.op is parse.UnaryOp.DEREFERENCE
-        ):
-            with ExitStack() as exit_stack:
-                if not dest.offset and not is_trivial_expr(expr.left.expr):
-                    saved_result = exit_stack.enter_context(
-                        ctx.func.stack_temp(right_ty)
-                    ).addr
-                    ctx.emitln(b"	%s	%s, %s" % (mov(right_ty.size), dest, saved_result))
-                else:
-                    saved_result = dest
-
-                reg_a = register.Address(register.a, 8)
-                compile_expr(ctx, expr.left.expr, reg_a)
-                reg_c = register.Address(register.c, right_ty.size)
-                ctx.emitln(b"	%s	%s, %s" % (mov(right_ty.size), saved_result, reg_c))
-                ctx.emitln(
-                    b"	%s	%s, %s" % (mov(right_ty.size), reg_c, reg_a.with_offset(b"0"))
-                )
-        elif isinstance(expr.left, parse.IndexExpr):
-            result_ty = analyze_type(ctx, expr.left)
-            index_ty = analyze_type(ctx, expr.left.index)
-
-            target = register.Address(register.a, 8)
-            index = register.Address(register.c, index_ty.size)
-
-            compile_expr(ctx, expr.left.target, target)
-
-            with ExitStack() as exit_stack:
-                if not is_trivial_expr(expr.left.index):
-                    tmp = exit_stack.enter_context(ctx.spill(target))
-                    ctx.emitln(b"	movq	%s, %s" % (target, tmp))
-                else:
-                    tmp = index
-
-                compile_expr(ctx, expr.left.index, tmp)
-
-            if dest.offset:
-                source = register.Address(register.d, result_ty.size)
-                ctx.emitln(b"	%s	%s, %s" % (mov(result_ty.size), dest, source))
-            else:
-                source = dest
-            ctx.emitln(
-                b"	%s	%s, (%s,%s,%s)"
-                % (
-                    mov(result_ty.size),
-                    source,
-                    target,
-                    index.with_size(8),
-                    str(result_ty.size).encode("ascii"),
-                )
-            )
-        else:
-            raise NotImplementedError
+        compile_assignment_target(ctx, expr.left, dest, op=assignment_op(expr.op))
     elif isinstance(expr, parse.BinaryExpr) and expr.op is parse.BinaryOp.ADDITION:
         left_ty, right_ty = analyze_type(ctx, expr.left), analyze_type(ctx, expr.right)
         result_ty = analyze_type(ctx, expr)
@@ -851,6 +797,75 @@ def compile_expr(ctx, expr, dest):
 
     else:
         raise NotImplementedError(expr)
+
+
+def assignment_op(op):
+    if op is parse.BinaryOp.ASSIGNMENT:
+        return mov
+    elif op is parse.BinaryOp.ADDITION_ASSIGNMENT:
+        return add
+    else:
+        raise NotImplementedError(op)
+
+
+def compile_assignment_target(ctx, expr, src, op=mov):
+    dest_ty = analyze_type(ctx, expr)
+
+    if isinstance(expr, parse.IdentExpr):
+        var = ctx.resolve_variable(expr.name)
+        ctx.emitln(var.store(src, op=op))
+    elif isinstance(expr, parse.UnaryExpr) and expr.op is parse.UnaryOp.DEREFERENCE:
+        with ExitStack() as exit_stack:
+            if not src.offset and not is_trivial_expr(expr.expr):
+                saved_result = exit_stack.enter_context(
+                    ctx.func.stack_temp(dest_ty)
+                ).addr
+                ctx.emitln(b"	%s	%s, %s" % (mov(dest_ty.size), src, saved_result))
+            else:
+                saved_result = src
+
+            reg_a = register.Address(register.a, 8)
+            compile_expr(ctx, expr.expr, reg_a)
+            reg_c = register.Address(register.c, dest_ty.size)
+            ctx.emitln(b"	%s	%s, %s" % (mov(dest_ty.size), saved_result, reg_c))
+            ctx.emitln(
+                b"	%s	%s, %s" % (op(dest_ty.size), reg_c, reg_a.with_offset(b"0"))
+            )
+    elif isinstance(expr, parse.IndexExpr):
+        result_ty = analyze_type(ctx, expr)
+        index_ty = analyze_type(ctx, expr.index)
+
+        target = register.Address(register.a, 8)
+        index = register.Address(register.c, index_ty.size)
+
+        compile_expr(ctx, expr.target, target)
+
+        with ExitStack() as exit_stack:
+            if not is_trivial_expr(expr.index):
+                tmp = exit_stack.enter_context(ctx.spill(target))
+                ctx.emitln(b"	movq	%s, %s" % (target, tmp))
+            else:
+                tmp = index
+
+            compile_expr(ctx, expr.index, tmp)
+
+        if src.offset:
+            source = register.Address(register.d, result_ty.size)
+            ctx.emitln(b"	%s	%s, %s" % (mov(result_ty.size), src, source))
+        else:
+            source = src
+        ctx.emitln(
+            b"	%s	%s, (%s,%s,%s)"
+            % (
+                op(result_ty.size),
+                source,
+                target,
+                index.with_size(8),
+                str(result_ty.size).encode("ascii"),
+            )
+        )
+    else:
+        raise NotImplementedError
 
 
 def is_trivial_expr(expr):

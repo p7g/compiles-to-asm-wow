@@ -47,6 +47,7 @@ class T(Enum):
     LPAREN = auto()
     OROR = auto()
     PLUS = auto()
+    PLUSEQ = auto()
     RBRACE = auto()
     RBRACKET = auto()
     RETURN = auto()
@@ -85,7 +86,6 @@ _one_char = {
     "(": T.LPAREN,
     ")": T.RPAREN,
     "*": T.STAR,
-    "+": T.PLUS,
     ",": T.COMMA,
     ":": T.COLON,
     ";": T.SEMICOLON,
@@ -132,6 +132,12 @@ def tokenize(text):
 
         if c in _one_char:
             yield Token(_one_char[c], start, c)
+        elif c == "+":
+            if peekchar() == "=":
+                c += nextchar()
+                yield Token(T.PLUSEQ, start, c)
+            else:
+                yield Token(T.PLUS, start, c)
         elif c == ".":
             c = peekchar()
             if c != ".":
@@ -579,23 +585,22 @@ class Assoc(Enum):
 class BinaryOp(Enum):
     ADDITION = T.PLUS
     ASSIGNMENT = T.EQ
+    ADDITION_ASSIGNMENT = T.PLUSEQ
     LOGICAL_AND = T.ANDAND
     LOGICAL_OR = T.OROR
     EQUAL = T.EQEQ
 
 
-precedence = dict(
-    (op, prec)
-    for prec, op in enumerate(
-        [
-            BinaryOp.ADDITION,
-            BinaryOp.EQUAL,
-            BinaryOp.LOGICAL_AND,
-            BinaryOp.LOGICAL_OR,
-            BinaryOp.ASSIGNMENT,
-        ]
-    )
-)
+precedence = {
+    BinaryOp.ADDITION: 1,
+    BinaryOp.EQUAL: 2,
+    BinaryOp.LOGICAL_AND: 3,
+    BinaryOp.LOGICAL_OR: 4,
+    BinaryOp.ASSIGNMENT: 5,
+    BinaryOp.ADDITION_ASSIGNMENT: 5,
+}
+
+assert all(op in precedence for op in BinaryOp)
 
 associativity = defaultdict(
     lambda: Assoc.LEFT,
