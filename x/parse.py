@@ -176,7 +176,7 @@ def tokenize(text):
             while peekchar().isalnum() or peekchar() == "_":
                 c += nextchar()
             yield Token(_keywords.get(c, T.IDENT), start, c)
-        elif c.isdigit():
+        elif c.isdigit() or c == "-":
             while peekchar().isdigit():
                 c += nextchar()
             yield Token(T.INTEGER, start, c)
