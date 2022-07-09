@@ -671,8 +671,20 @@ def compile_expr(ctx, expr, dest):
         func = ctx.global_scope[expr.target.name]
         if not isinstance(func, FuncMeta):
             raise XTypeError("Cannot call non-function")
-        assert len(func.type.params) <= len(register.argument_registers)
-        assert len(func.type.params) == len(expr.args)
+
+        if len(func.type.params) > len(register.argument_registers):
+            raise XTypeError(
+                f"Function {func.name.decode('ascii')} has too many parameters"
+            )
+        if len(func.type.params) != len(expr.args):
+            raise XTypeError(
+                f"Incorrect number of arguments for {func.name.decode('ascii')}"
+            )
+
+        for param_ty, arg_ast in zip(func.type.params, expr.args):
+            arg_ty = analyze_type(ctx, arg_ast)
+            if not is_assignable(arg_ty, param_ty):
+                raise XTypeError(f"Cannot pass {arg_ty} as {param_ty}")
 
         # FIXME: implicitly cast arguments to parameter types if applicable
         reg_param_arg_triples = zip(

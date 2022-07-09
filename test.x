@@ -1,34 +1,29 @@
-extern function printf(fmt: *u8, i: i32, i2: i32);
-extern function free(ptr: *void);
-extern function malloc(size: u64): *void;
+extern function fopen(name: *u8, mode: *u8): *void;
+extern function fclose(fp: *void);
+extern function fgetc(fp: *void): i32;
+extern function fputc(c: i32, fp: *void);
+extern function fprintf(fp: *void, fmt: *u8, prog: *u8, nl: i32);
+extern function perror(msg: *u8);
+extern var __stdoutp: *void;
+extern var __stderrp: *void;
 
-function mul(a: i32, b: i32): i32 {
-    var acc = 0;
-    var i = 0;
-    while !(i == b) {
-        acc += a;
-        i += 1;
-    }
-    return acc;
-}
-
-function main(): i32 {
-    var numints = 10;
-
-    var ints: *i32 = malloc(mul(sizeof(type i32), numints));
-    var i = -1;
-    while i != 9 {
-        ints[i] = (i += 1);
+function main(argc: i32, argv: **u8): i32 {
+    if argc != 2 {
+        fprintf(__stderrp, "usage: %s FILE%c", argv[0], 10);
+        return 1;
     }
 
-    i = 0;
-    while i != 10 {
-        printf("%d%c", ints[i], 32);
-        i += 1;
+    var f = fopen(argv[1], "r");
+    if !f {
+        perror("fopen");
+        return 1;
     }
-    printf("%c%c", 32, 10);
 
-    free(ints);
+    var c: i32;
+    while (c = fgetc(f)) != -1 {
+        fputc(c, __stdoutp);
+    }
 
+    fclose(f);
     return 0;
 }
