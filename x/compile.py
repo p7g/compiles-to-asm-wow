@@ -139,8 +139,14 @@ def is_assignable(from_ty, to_ty):
             return True  # TODO: Maybe warn if number will be truncated?
         else:
             return False  # TODO: Explain that explicit cast is needed
-    # elif isinstance(from_ty, BoolType) and isinstance(to_ty, IntType):
-    #     return True
+    if (
+        isinstance(from_ty, PointerType)
+        and isinstance(to_ty, PointerType)
+        and (
+            isinstance(from_ty.pointee, VoidType) or isinstance(to_ty.pointee, VoidType)
+        )
+    ):
+        return True
     else:
         return is_same_type(from_ty, to_ty)
 
@@ -188,6 +194,7 @@ class ProgramContext:
             "u32": IntType(4, signed=False),
             "i64": IntType(8, signed=True),
             "u64": IntType(8, signed=False),
+            "void": VoidType(),
         }
         self._asm_lines = []
         self.func = None
