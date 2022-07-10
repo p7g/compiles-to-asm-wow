@@ -1,0 +1,92 @@
+next goal: bootstrap
+
+features
+- modules
+- non-exported functions
+- global variables
+- constants
+- enums
+
+optimizations
+- special case add imm+reg
+	probably the same as "don't generate code for immediates" below
+
+- don't generate code for immediates; an int shouldn't be moved into a register
+  if it can be passed directly to an instruction
+	this is dumb
+		movl	$1, %eax
+		movl	-4(%rbp), %ecx
+		cmpl	%eax, %ecx
+	it should just be
+		cmpl	$1, -4(%rbp)
+	or, since I think you can't do imm+offset
+		movl	-4(%rbp), %eax
+		cmpl	$1, %eax
+
+- add more cases to is_trivial_expr
+
+- don't try to use rax for everything in comparison?
+	seeing stuff like:
+		movl	$1, %eax
+		movl	%eax, -20(%rbp)  ## just a temporary
+		movl	$2, %eax
+		cmpl	%eax, -20(%rbp)
+	when it would be better to do
+		movl	$1, %eax
+		movl	$2, %ecx
+		cmpl	%eax, %ecx
+
+- avoid shuffling values between registers
+	some results end up in one register only to be moved to another
+		movl	$1, %eax
+		movl	%eax, %edx
+		## do something with edx
+
+- for normal assignment don't load values back from lhs for result
+	for in-place ops this doesn't work, but for regular assignment it should
+		## (c = fgetc(f)) == -1
+		movq	-8(%rbp), %rdi  ## f
+		call	_fgetc
+		movq	%eax, -12(%rbp)  ## store in c
+		cmpl	$-1, %eax  ## just use eax instead of loading from c
+		jne	past_loop
+
+- compile_reference should have a special case for locals
+	instead of doing this
+		leaq	-4(%rbp), %rax
+		movq	0(%rax), %rax
+	it should just do
+		movq	-4(%rbp), %rax
+
+- if there is no else block, don't add the jump to end after then block
+
+- remove "leaq 0(reg), reg" (or figure out how it's generated and fix)
+
+- replace leaq + mov with just mov
+	this
+		leaq	-16(%rbp), %rax
+		movl	0(%rax), %eax	## .len
+	can be replaced with
+		movl	-16(%rbp), %eax	## .len
+
+- while true should just have an unconditional jump at the bottom
+
+- wtf
+	movl	-28(%rbp), %eax
+	movl	%eax, -56(%rbp)	## i
+	movl	-56(%rbp), %eax
+	movslq	%eax, %rax
+	movq	%rax, -56(%rbp)
+	movq	-24(%rbp), %rax	## num_ops
+	cmpq	%rax, -56(%rbp)
+	jne	L52
+
+
+possible issues:
+- is it fine to do movb $91, %al and then read from %eax? might need a movzbl
+
+possible improvements:
+- comments around code for arguments to function
+- comments around while loop
+- comment when storing to variable
+- comment when loading reference to variable
