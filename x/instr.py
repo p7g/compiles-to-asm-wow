@@ -17,6 +17,10 @@ def movs(src_size, dest_size):
     return b"movs%s%s" % (_size_suffix[src_size], _size_suffix[dest_size])
 
 
+def movz(src_size, dest_size):
+    return b"movz%s%s" % (_size_suffix[src_size], _size_suffix[dest_size])
+
+
 def sete(size):
     return b"sete%s" % _size_suffix[size]
 

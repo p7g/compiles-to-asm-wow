@@ -495,8 +495,8 @@ def parse(tokens):
                 yield parse_type_decl(it)
             else:
                 raise UnexpectedToken(tok.pos, tok.text)
-        except StopIteration:
-            raise UnexpectedEOF()
+        except StopIteration as exc:
+            raise UnexpectedEOF() from exc
 
 
 def parse_extern_decl(it):
@@ -661,7 +661,7 @@ def parse_if_statement(it):
             while it.peek().type is not T.RBRACE:
                 else_body.append(parse_statement(it))
 
-        _expect(next(it), T.RBRACE)
+            _expect(next(it), T.RBRACE)
     else:
         else_body = None
 

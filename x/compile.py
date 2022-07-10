@@ -1,7 +1,7 @@
 from collections import ChainMap
 from contextlib import ExitStack, contextmanager
 from x import opt, parse, register
-from x.instr import add, cmp, mov, movs
+from x.instr import add, cmp, mov, movs, movz
 
 
 # Type system
@@ -47,6 +47,19 @@ class IntType(Type):
         return f"i{bit_size}" if self.signed else f"u{bit_size}"
 
 
+class PlaceholderType(Type):
+    def __init__(self, name):
+        super().__init__()
+        self.name = name
+
+    @property
+    def size(self):
+        raise XTypeError(f"Type {self.name} is incomplete")
+
+    def __str__(self):
+        return f"placeholder({self.name})"
+
+
 class BoolType(Type):
     size = 1
 
@@ -76,8 +89,9 @@ class FunctionType(Type):
 
 
 class StructType(Type):
-    def __init__(self, members, size):
+    def __init__(self, name, members, size):
         super().__init__()
+        self.name = name
         self.members = {m.name: m for m in members}
         self.size = size
 
@@ -87,7 +101,7 @@ class StructType(Type):
         return self.members[name]
 
     def __str__(self):
-        return "{%s}" % ", ".join(f"{m.name}: {m.type}" for m in self.members.values())
+        return self.name
 
 
 class StructMember:
@@ -200,19 +214,27 @@ def is_assignable(from_ty, to_ty):
         return is_same_type(from_ty, to_ty)
 
 
-def is_same_type(a, b):
+def is_same_type(a, b, seen=()):
+    if a is b:
+        return True
+
+    if (a, b) in seen:
+        return False
+    else:
+        seen = {*seen, (a, b)}
+
     if isinstance(a, IntType) and isinstance(b, IntType):
         return a.size == b.size
     elif isinstance(a, PointerType) and isinstance(b, PointerType):
-        return is_same_type(a.pointee, b.pointee)
+        return is_same_type(a.pointee, b.pointee, seen)
     elif isinstance(a, FunctionType) and isinstance(b, FunctionType):
         return (
             len(a.params) == len(b.params)
             and all(
-                is_same_type(param_a, param_b)
+                is_same_type(param_a, param_b, seen)
                 for param_a, param_b in zip(a.params, b.params)
             )
-            and is_same_type(a.ret, b.ret)
+            and is_same_type(a.ret, b.ret, seen)
         )
     elif isinstance(a, BoolType) and isinstance(b, BoolType):
         return True
@@ -221,18 +243,38 @@ def is_same_type(a, b):
     elif isinstance(a, OpaqueType):
         return a is b
     elif isinstance(a, StructType) and isinstance(b, StructType):
-        if a.keys() ^ b.keys():
+        if a.members.keys() ^ b.members.keys():
             return False
         for mem_a, mem_b in zip(a.members.values(), b.members.values()):
             if mem_a.name != mem_b.name:
                 return False
             elif mem_a.offset != mem_b.offset:
                 return False
-            elif not is_same_type(mem_a.type, mem_b.type):
+            elif not is_same_type(mem_a.type, mem_b.type, seen):
                 return False
         return True
     else:
         return False
+
+
+def replace_placeholder_type(in_type, placeholder, with_type, seen=()):
+    if in_type in seen:
+        return
+    else:
+        seen = {*seen, in_type}
+    if isinstance(in_type, PointerType):
+        if in_type.pointee is placeholder:
+            in_type.pointee = with_type
+        else:
+            replace_placeholder_type(in_type.pointee, placeholder, with_type, seen)
+    elif isinstance(in_type, FunctionType):
+        raise NotImplementedError
+    elif isinstance(in_type, StructType):
+        for member in in_type.members.values():
+            if member.type is placeholder:
+                member.type = with_type
+            else:
+                replace_placeholder_type(member.type, placeholder, with_type, seen)
 
 
 # Code generation
@@ -302,9 +344,8 @@ class ProgramContext:
             raise XTypeError(f"Cannot redeclare variable {name!r}")
         if self.func:
             align_to = alignment_for_size(type_.size)
-            self.func._next_stack_offset = (
-                align(self.func._next_stack_offset, align_to) + align_to
-            )
+            self.func._next_stack_offset += type_.size
+            self.func._next_stack_offset = align(self.func._next_stack_offset, align_to)
             var = LocalVariable(name, type_, self.func._next_stack_offset)
         else:
             raise NotImplementedError
@@ -400,7 +441,7 @@ class LocalVariable(Variable):
             )
         return b"	%s	%s, %s" % (
             op(self.type.size),
-            source,
+            source.with_size(self.type.size),
             self.addr,
         )
 
@@ -525,7 +566,14 @@ def xcompile(decls):
         elif isinstance(decl, parse.ExternTypeDecl):
             ctx.named_types[decl.name] = OpaqueType(decl.name)
         elif isinstance(decl, parse.TypeAliasDecl):
-            ctx.named_types[decl.name] = compile_type(ctx, decl.alias_of)
+            placeholder = PlaceholderType(decl.name)
+            ctx.named_types[decl.name] = placeholder
+            ctx.named_types[decl.name] = compile_type(
+                ctx, decl.alias_of, name=decl.name
+            )
+            replace_placeholder_type(
+                ctx.named_types[decl.name], placeholder, ctx.named_types[decl.name]
+            )
         else:
             raise NotImplementedError
 
@@ -550,8 +598,15 @@ def compile_func_decl(ctx, decl):
     assert isinstance(decl, parse.FuncDecl)
 
     # Create type for function
-    params = [compile_type(ctx, param.type) for param in decl.params]
-    ret = compile_type(ctx, decl.ret) if decl.ret else VoidType()
+    params = [
+        compile_type(ctx, param.type, name=f"{decl.name}.{param.name}")
+        for param in decl.params
+    ]
+    ret = (
+        compile_type(ctx, decl.ret, name=f"{decl.name}.return")
+        if decl.ret
+        else VoidType()
+    )
     func_ty = FunctionType(params, ret)
     end_label = None if decl.is_proto else Label.create()
     func_meta = FuncMeta(decl.name.encode("ascii"), func_ty, end_label, ctx)
@@ -585,6 +640,7 @@ def compile_func_decl(ctx, decl):
     ):
         var = ctx.declare_variable(param_ast.name, param_ty)
         ctx.emitln(var.store(register.Address(arg_reg, size=param_ty.size)))
+        ctx.comment(param_ast.name.encode("ascii"))
 
     ctx.commentln(b"function body")
     for stmt in decl.body:
@@ -603,7 +659,7 @@ def compile_func_decl(ctx, decl):
     ctx.func = None
 
 
-def compile_type(ctx, ast_ty):
+def compile_type(ctx, ast_ty, name=None):
     if isinstance(ast_ty, parse.NamedTypeExpr):
         try:
             return ctx.named_types[ast_ty.name]
@@ -615,14 +671,14 @@ def compile_type(ctx, ast_ty):
         next_member_offset = 0
         members = []
 
-        for name, type_ast in ast_ty.members:
-            member_ty = compile_type(ctx, type_ast)
+        for member_name, type_ast in ast_ty.members:
+            member_ty = compile_type(ctx, type_ast, name=f"{name}.{member_name}")
             align_to = alignment_for_size(member_ty.size)
             next_member_offset = align(next_member_offset, align_to)
-            members.append(StructMember(name, member_ty, next_member_offset))
+            members.append(StructMember(member_name, member_ty, next_member_offset))
             next_member_offset += member_ty.size
 
-        return StructType(members, next_member_offset)
+        return StructType(name, members, next_member_offset)
     else:
         raise NotImplementedError(repr(ast_ty))
 
@@ -792,14 +848,19 @@ def compile_expr(ctx, expr, dest):
         with ExitStack() as exit_stack:
             # compile and spill non-trivial arguments
             for i, (dest_reg, param, arg) in enumerate(complex_args):
-                arg_dest = register.Address(dest_reg, size=param.size)
+                arg_ty = analyze_type(ctx, arg)
+                arg_dest = register.Address(dest_reg, size=arg_ty.size)
                 if i != len(complex_args) - 1:
                     arg_dest = exit_stack.enter_context(ctx.spill(arg_dest))
                 compile_expr(ctx, arg, arg_dest)
+                implicitly_cast(ctx, arg_dest, arg_ty, param)
 
         # compile trivial arguments
         for dest_reg, param, arg in trivial_args:
-            compile_expr(ctx, arg, register.Address(dest_reg, size=param.size))
+            arg_ty = analyze_type(ctx, arg)
+            dest_addr = register.Address(dest_reg, size=arg_ty.size)
+            compile_expr(ctx, arg, dest_addr)
+            implicitly_cast(ctx, dest_addr, arg_ty, param)
 
         ctx.emitln(b"	call	%s" % global_name(func.name))
         if dest is not None:
@@ -846,10 +907,10 @@ def compile_expr(ctx, expr, dest):
             if not is_trivial_expr(expr.index):
                 tmp = exit_stack.enter_context(ctx.spill(target))
                 ctx.emitln(b"	movq	%s, %s" % (target, tmp))
-            else:
-                tmp = index
 
-            compile_expr(ctx, expr.index, tmp)
+            compile_expr(ctx, expr.index, index)
+        implicitly_cast(ctx, index, index_ty, IntType(8, signed=False))
+        target = target.with_size(8)
         if dest:
             if not dest.is_plain_reg():
                 dest2 = register.Address(register.d, result_ty.size)
@@ -859,12 +920,7 @@ def compile_expr(ctx, expr, dest):
                 b"	%s	%s, %s"
                 % (
                     mov(result_ty.size),
-                    register.Address(
-                        target.reg,
-                        result_ty.size,
-                        index_reg=index.reg,
-                        scale_factor=result_ty.size,
-                    ),
+                    compile_pointer_index(ctx, target.reg, index.reg, result_ty),
                     dest2,
                 )
             )
@@ -880,6 +936,7 @@ def compile_expr(ctx, expr, dest):
                 ctx.emitln(b"	%s	%s, %s" % (mov(expr_ty.size), addr, addr2))
                 addr = addr2
             ctx.emitln(b"	%s	%s, %s" % (mov(expr_ty.size), addr, dest))
+            ctx.comment(b".%s" % expr.member_name.encode("ascii"))
     elif isinstance(expr, parse.BinaryExpr) and expr.op in (
         parse.BinaryOp.ASSIGNMENT,
         parse.BinaryOp.ADDITION_ASSIGNMENT,
@@ -890,28 +947,40 @@ def compile_expr(ctx, expr, dest):
         right_ty = analyze_type(ctx, expr.right)
         left_ty = analyze_type(ctx, expr.left)
 
-        if not is_assignable(right_ty, left_ty):
+        op = assignment_op(expr.op)
+
+        # FIXME: "and op is mov" may not be safe?
+        if not is_assignable(right_ty, left_ty) and op is mov:
             raise XTypeError(
                 f"Cannot assign value of type {right_ty} to {expr.left}, which is {left_ty}"  # noqa E501
             )
 
-        rhs = register.Address(register.d, right_ty.size)
+        rhs = register.Address(
+            register.c if dest and dest.reg is register.d else register.d, right_ty.size
+        )
         compile_expr(ctx, expr.right, rhs)
+        if right_ty.size < left_ty.size:
+            implicitly_cast(ctx, rhs, right_ty, left_ty)
 
-        compile_assignment(ctx, expr.left, rhs, dest, op=assignment_op(expr.op))
+        compile_assignment(ctx, expr.left, rhs.with_size(left_ty.size), dest, op=op)
     elif isinstance(expr, parse.BinaryExpr) and expr.op is parse.BinaryOp.ADDITION:
         left_ty, right_ty = analyze_type(ctx, expr.left), analyze_type(ctx, expr.right)
         result_ty = analyze_type(ctx, expr)
 
         # Compile left into ax, right into cx, add to cx, move to dest
         ax = register.Address(register.a, result_ty.size)
-        cx = dest if dest.is_plain_reg() else register.Address(register.c, result_ty.size)
+        cx = (
+            dest
+            if dest.is_plain_reg()
+            else register.Address(register.c, result_ty.size)
+        )
 
         compile_expr(ctx, expr.left, ax)
 
         with ExitStack() as exit_stack:
             if not is_trivial_expr(expr.right):
-                exit_stack.enter_context(ctx.spill(ax))
+                tmp = exit_stack.enter_context(ctx.spill(ax))
+                ctx.emitln(b"	%s	%s, %s" % (mov(ax.size), ax, tmp))
             compile_expr(ctx, expr.right, cx)
 
         ctx.emitln(b"	%s	%s, %s" % (add(result_ty.size), ax, cx))
@@ -940,6 +1009,7 @@ def compile_reference(ctx, expr, base_reg):
         return addr.with_offset(0)
     elif isinstance(expr, parse.IndexExpr):
         target_ty = analyze_type(ctx, expr.target)
+        index_ty = analyze_type(ctx, expr.index)
         if not isinstance(target_ty, PointerType):
             raise XTypeError("Can only index pointers")
         target_dest = register.Address(base_reg, target_ty.size)
@@ -951,15 +1021,13 @@ def compile_reference(ctx, expr, base_reg):
         else:
             with ctx.spill(target_dest) as tmp:
                 ctx.emitln(b"	%s	%s, %s" % (mov(target_dest.size), target_dest, tmp))
-                index_reg = register.Address(
-                    register.c if base_reg is register.d else register.d, 8
+                index_addr = register.Address(
+                    register.c if base_reg is register.d else register.d, index_ty.size
                 )
-                compile_expr(ctx, expr.index, index_reg)
-            return register.Address(
-                base_reg,
-                target_ty.pointee.size,
-                index_reg=index_reg,
-                scale_factor=target_ty.pointee.size,
+                compile_expr(ctx, expr.index, index_addr)
+                implicitly_cast(ctx, index_addr, index_ty, IntType(8, False))
+            return compile_pointer_index(
+                ctx, base_reg, index_addr.reg, target_ty.pointee
             )
     elif isinstance(expr, parse.DotExpr):
         target_ty = analyze_type(ctx, expr.target)
@@ -975,12 +1043,9 @@ def compile_reference(ctx, expr, base_reg):
         elif not isinstance(target_ty, StructType):
             raise XTypeError(f"Can only access fields of structs, not {target_ty}")
         else:
-            # compile_reference the target, and just add to the offset and
-            # adjust the size
             addr = compile_reference(ctx, expr.target, base_reg)
-            return addr.with_offset(
-                addr.offset + target_ty.get_member(expr.member_name).offset
-            )
+            mem = target_ty.get_member(expr.member_name)
+            return addr.with_offset(addr.offset + mem.offset).with_size(mem.type.size)
     else:
         raise NotImplementedError
         # expr_ty = analyze_type(ctx, expr)
@@ -1058,10 +1123,8 @@ def compile_assignment(ctx, expr, src, dest, op=mov):
             if not is_trivial_expr(expr.index):
                 tmp = exit_stack.enter_context(ctx.spill(target))
                 ctx.emitln(b"	movq	%s, %s" % (target, tmp))
-            else:
-                tmp = index
 
-            compile_expr(ctx, expr.index, tmp)
+            compile_expr(ctx, expr.index, index)
 
         if not src.is_plain_reg():
             source = register.Address(register.d, result_ty.size)
@@ -1073,12 +1136,7 @@ def compile_assignment(ctx, expr, src, dest, op=mov):
             % (
                 op(result_ty.size),
                 source,
-                register.Address(
-                    target.reg,
-                    result_ty.size,
-                    index_reg=index.reg,
-                    scale_factor=result_ty.size,
-                ),
+                compile_pointer_index(ctx, target.reg, index.reg, result_ty),
             )
         )
 
@@ -1089,12 +1147,7 @@ def compile_assignment(ctx, expr, src, dest, op=mov):
                     b"	%s	%s, %s"
                     % (
                         mov(result_ty.size),
-                        register.Address(
-                            target.reg,
-                            result_ty.size,
-                            index_reg=index.reg,
-                            scale_factor=result_ty.size,
-                        ),
+                        compile_pointer_index(ctx, target.reg, index.reg, result_ty),
                         reg_d,
                     )
                 )
@@ -1104,17 +1157,19 @@ def compile_assignment(ctx, expr, src, dest, op=mov):
                     b"	%s	%s, %s"
                     % (
                         mov(result_ty.size),
-                        register.Address(
-                            target.reg,
-                            result_ty.size,
-                            index_reg=index.reg,
-                            scale_factor=result_ty.size,
-                        ),
+                        compile_pointer_index(ctx, target.reg, index.reg, result_ty),
                         dest,
                     )
                 )
     elif isinstance(expr, parse.DotExpr):
         base_reg = dest.reg if dest and dest.is_plain_reg() else register.a
+        # with ctx.spill(src) as src_var:
+        #     src_tmp = src
+        #     if not src.is_plain_reg():
+        #         src_tmp = register.Address(base_reg, src.size)
+        #         ctx.emitln(b"	%s	%s, %s" % (mov(src.size), src, src_tmp))
+        #     ctx.emitln(b"	%s	%s, %s" % (mov(src.size), src_tmp, src_var))
+        #     addr = compile_reference(ctx, expr, base_reg)
         addr = compile_reference(ctx, expr, base_reg)
 
         if not src.is_plain_reg():
@@ -1135,9 +1190,37 @@ def compile_assignment(ctx, expr, src, dest, op=mov):
         raise NotImplementedError
 
 
+def compile_pointer_index(ctx, base_reg, index_reg, element_type):
+    if element_type.size in (1, 2, 4, 8):
+        return register.Address(
+            base_reg,
+            element_type.size,
+            index_reg=index_reg,
+            scale_factor=element_type.size,
+        )
+    else:
+        import math
+
+        assert element_type.size % 2 == 0
+        shift = int(math.log(element_type.size) / math.log(2))
+        # Scale factor too large, need to emit code to do the math
+        base_addr = register.Address(base_reg, 8)
+        index_addr = register.Address(index_reg, 8)
+        ctx.emitln(b"	shlq	%s, %s" % (register.Immediate(shift), index_addr))
+        ctx.emitln(b"	addq	%s, %s" % (index_addr, base_addr))
+        return register.Address(base_reg, element_type.size, 0)
+
+
 def is_trivial_expr(expr):
     return isinstance(
-        expr, (parse.IdentExpr, parse.IntExpr, parse.StringExpr, parse.BoolExpr)
+        expr,
+        (
+            parse.IdentExpr,
+            parse.IntExpr,
+            parse.StringExpr,
+            parse.BoolExpr,
+            parse.SizeofExpr,
+        ),
     )
 
 
@@ -1152,11 +1235,20 @@ def partition(items, key):
 
 
 def compile_addr_of(ctx, expr, dest):
-    if isinstance(expr, parse.IdentExpr):
-        var = ctx.resolve_variable(expr.name)
-        ctx.emitln(var.load_addr(dest))
+    base_reg = dest.reg if dest and dest.is_plain_reg() else register.a
+    addr = compile_reference(ctx, expr, base_reg)
+
+    if dest.is_plain_reg():
+        ctx.emitln(b"	leaq	%s, %s" % (addr, dest))
     else:
-        raise NotImplementedError
+        ctx.emitln(b"	leaq	%s, %%rax" % addr)
+        ctx.emitln(b"	movq	%%rax, %s" % dest)
+
+    # if isinstance(expr, parse.IdentExpr):
+    #     var = ctx.resolve_variable(expr.name)
+    #     ctx.emitln(var.load_addr(dest))
+    # else:
+    #     raise NotImplementedError
 
 
 def is_assignment_target(expr):
@@ -1215,15 +1307,33 @@ def compile_logical_expr(ctx, expr, jump, invert=False):
             left_ty, right_ty = analyze_type(ctx, expr.left), analyze_type(
                 ctx, expr.right
             )
-            if not is_same_type(left_ty, right_ty):
+            if not is_assignable(right_ty, left_ty) and not is_assignable(
+                left_ty, right_ty
+            ):
                 raise XTypeError(f"Cannot compare {left_ty} with {right_ty}")
 
-            assert left_ty.size == right_ty.size
+            size = max(left_ty.size, right_ty.size)
+
             with ctx.func.stack_temp(left_ty) as left_var:
                 compile_expr(ctx, expr.left, left_var.addr)
-                reg_a = register.Address(register.a, left_ty.size)
+                if left_ty.size < right_ty.size:
+                    reg_a = register.Address(register.a, left_ty.size)
+                    ctx.emitln(
+                        b"	%s	%s, %s" % (mov(left_ty.size), left_var.addr, reg_a)
+                    )
+                    implicitly_cast(ctx, reg_a, left_ty, right_ty)
+                    ctx.emitln(
+                        b"	%s	%s, %s"
+                        % (mov(size), reg_a.with_size(size), left_var.addr)
+                    )
+                reg_a = register.Address(register.a, right_ty.size)
                 compile_expr(ctx, expr.right, reg_a)
-                ctx.emitln(b"	%s	%s, %s" % (cmp(left_ty.size), reg_a, left_var.addr))
+                if right_ty.size < left_ty.size:
+                    implicitly_cast(ctx, reg_a, right_ty, left_ty)
+                ctx.emitln(
+                    b"	%s	%s, %s"
+                    % (cmp(size), reg_a.with_size(size), left_var.addr.with_size(size))
+                )
                 ctx.emitln(
                     b"	%s	%s"
                     % (
@@ -1256,14 +1366,17 @@ def implicitly_cast(ctx, addr, from_ty, to_ty):
         return
 
     assert from_ty.size < to_ty.size
-    if not from_ty.signed:
+    if not from_ty.signed and from_ty.size > 2:
         return
 
+    op = movs if from_ty.signed else movz
+
+    assert addr.is_plain_reg()
     ctx.emitln(
         b"	%s	%s, %s"
         % (
-            movs(from_ty.size, to_ty.size),
-            addr,
+            op(from_ty.size, to_ty.size),
+            addr.with_size(from_ty.size),
             addr.with_size(to_ty.size),
         )
     )

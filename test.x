@@ -1,26 +1,68 @@
 extern function malloc(size: u64): *void;
+extern function realloc(ptr: *void, new_size: u64): *void;
+extern function free(ptr: *void);
 extern function printf(fmt: *u8, i: i32);
 
-function print_int(i: i32) {
-    printf("%d\n", i);
+type int = i32;
+
+function mul(a: u64, b: u64): u64 {
+    var acc: u64 = 0;
+
+    while b {
+        acc += a;
+        b += -1;
+    }
+
+    return acc;
 }
 
-type s = {b: i64, a: i32};
+type intlist = {
+    len: u32,
+    cap: u32,
+    items: *i32,
+};
 
-function make_s(): *s {
-    return malloc(sizeof(type s));
+function intlist_init(list: *intlist) {
+    list.cap = list.len = 0;
+    list.items = null;
+}
+
+function intlist_deinit(list: *intlist) {
+    if list.items {
+        free(list.items);
+    }
+}
+
+function intlist_append(list: *intlist, item: int) {
+    if list.len == list.cap {
+        if list.cap {
+            list.cap += list.cap;
+        } else {
+            list.cap = 4;
+        }
+        list.items = realloc(list.items, mul(list.cap, sizeof(type int)));
+    }
+
+    list.items[list.len] = item;
+    list.len += 1;
 }
 
 function main(): i32 {
-    var s = make_s();
+    var l: intlist;
 
-    s.a = 0;
-    print_int(s.a);
+    intlist_init(&l);
 
-    s.a += 1;
-    print_int(s.a);
-    s.a += 1;
-    print_int(s.a);
+    var i = 0;
+    while i != 10 {
+        intlist_append(&l, i);
+        i += 1;
+    }
 
-    return s.a;
+    i = 0;
+    while i != l.len {
+        printf("%d\n", l.items[i]);
+        i += 1;
+    }
+
+    return 0;
 }

@@ -1,6 +1,3 @@
-from collections import namedtuple
-
-
 class Register:
     def __init__(self, variants):
         self.variants = variants
@@ -157,13 +154,28 @@ class Immediate:
         return b"$%s" % str(self.value).encode("ascii")
 
 
-class Address(namedtuple("Address", "reg size offset index_reg scale_factor")):
-    def __new__(cls, reg, size, offset=None, index_reg=None, scale_factor=None):
-        return super().__new__(cls, reg, size, offset, index_reg, scale_factor)
+class Address:
+    def __init__(self, reg, size, offset=None, index_reg=None, scale_factor=None):
+        self.reg = reg
+        self.size = size
+        self.offset = offset
+        self.index_reg = index_reg
+        self.scale_factor = scale_factor
+
+    def __eq__(self, other):
+        if not isinstance(other, Address):
+            return NotImplemented
+        return (
+            self.reg == other.reg
+            and self.size == other.size
+            and self.offset == other.offset
+            and self.index_reg == other.index_reg
+            and self.scale_factor == other.scale_factor
+        )
 
     def __bytes__(self):
         if not self.is_plain_reg():
-            addr = bytes(self.reg.name(8))
+            addr = self.reg.name(8)
             if self.index_reg:
                 addr += b",%s" % self.index_reg.name(8)
             if self.scale_factor:
@@ -179,10 +191,10 @@ class Address(namedtuple("Address", "reg size offset index_reg scale_factor")):
             return self.reg.name(self.size)
 
     def with_size(self, size):
-        return self._replace(size=size)
+        return Address(self.reg, size, self.offset, self.index_reg, self.scale_factor)
 
     def with_offset(self, offset):
-        return self._replace(offset=offset)
+        return Address(self.reg, self.size, offset, self.index_reg, self.scale_factor)
 
     def is_plain_reg(self):
         return self.offset is None and self.index_reg is None
