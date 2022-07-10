@@ -1,3 +1,6 @@
+from collections import namedtuple
+
+
 class Register:
     def __init__(self, variants):
         self.variants = variants
@@ -154,29 +157,32 @@ class Immediate:
         return b"$%s" % str(self.value).encode("ascii")
 
 
-class Address:
-    def __init__(self, reg, size, offset=None):
-        self.reg = reg
-        self.size = size
-        self.offset = offset
+class Address(namedtuple("Address", "reg size offset index_reg scale_factor")):
+    def __new__(cls, reg, size, offset=None, index_reg=None, scale_factor=None):
+        return super().__new__(cls, reg, size, offset, index_reg, scale_factor)
 
     def __bytes__(self):
-        if self.offset is None:
-            return self.reg.name(self.size)
+        if not self.is_plain_reg():
+            addr = bytes(self.reg.name(8))
+            if self.index_reg:
+                addr += b",%s" % self.index_reg.name(8)
+            if self.scale_factor:
+                addr += b",%s" % str(self.scale_factor).encode("ascii")
+            if isinstance(self.offset, int):
+                offset_bytes = str(self.offset).encode("ascii")
+            elif self.offset:
+                offset_bytes = bytes(self.offset)
+            else:
+                offset_bytes = b""
+            return b"%s(%s)" % (offset_bytes, addr)
         else:
-            return b"%s(%s)" % (self.offset, self.reg.name(8))
-
-    def __eq__(self, other):
-        if not isinstance(other, Address):
-            return NotImplemented
-        return (
-            self.reg is other.reg
-            and self.size == other.size
-            and self.offset == other.offset
-        )
+            return self.reg.name(self.size)
 
     def with_size(self, size):
-        return Address(self.reg, size, self.offset)
+        return self._replace(size=size)
 
     def with_offset(self, offset):
-        return Address(self.reg, self.size, offset)
+        return self._replace(offset=offset)
+
+    def is_plain_reg(self):
+        return self.offset is None and self.index_reg is None

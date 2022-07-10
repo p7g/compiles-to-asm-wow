@@ -34,6 +34,7 @@ class T(Enum):
     CHAR = auto()
     COLON = auto()
     COMMA = auto()
+    DOT = auto()
     ELLIPSIS = auto()
     ELSE = auto()
     EXTERN = auto()
@@ -159,13 +160,14 @@ def tokenize(text):
         elif c == ".":
             c = peekchar()
             if c != ".":
-                raise UnexpectedToken(start, ".")
-            nextchar()
-            c = peekchar()
-            if c != ".":
-                raise UnexpectedToken(start, "..")
-            nextchar()
-            yield Token(T.ELLIPSIS, start, "...")
+                yield Token(T.DOT, start, c)
+            else:
+                nextchar()
+                c = peekchar()
+                if c != ".":
+                    raise UnexpectedToken(start, "..")
+                nextchar()
+                yield Token(T.ELLIPSIS, start, "...")
         elif c == "=":
             if peekchar() == "=":
                 c += nextchar()
@@ -244,6 +246,16 @@ class ExternTypeDecl(Decl):
 
     def __repr__(self):
         return f"ExternTypeDecl({self.name!r})"
+
+
+class TypeAliasDecl(Decl):
+    def __init__(self, name, alias_of):
+        super().__init__()
+        self.name = name
+        self.alias_of = alias_of
+
+    def __repr__(self):
+        return f"TypeAliasDecl({self.name!r}, {self.alias_of!r})"
 
 
 class Stmt:
@@ -362,6 +374,16 @@ class IndexExpr(Expr):
         return f"IndexExpr({self.target!r}, {self.index!r})"
 
 
+class DotExpr(Expr):
+    def __init__(self, target, member_name):
+        super().__init__()
+        self.target = target
+        self.member_name = member_name
+
+    def __repr__(self):
+        return f"DotExpr({self.target!r}, {self.member_name!r})"
+
+
 class IdentExpr(Expr):
     def __init__(self, name):
         super().__init__()
@@ -437,6 +459,15 @@ class NamedTypeExpr(TypeExpr):
         return f"NamedTypeExpr({self.name!r})"
 
 
+class StructTypeExpr(TypeExpr):
+    def __init__(self, members):
+        super().__init__()
+        self.members = members
+
+    def __repr__(self):
+        return f"StructTypeExpr({self.members!r})"
+
+
 def _expect(tok, type_):
     if tok.type is not type_:
         raise UnexpectedToken(tok.pos, tok.text)
@@ -460,6 +491,8 @@ def parse(tokens):
             elif tok.type is T.VAR:
                 # TODO
                 raise NotImplementedError("Global variables")
+            elif tok.type is T.TYPE:
+                yield parse_type_decl(it)
             else:
                 raise UnexpectedToken(tok.pos, tok.text)
         except StopIteration:
@@ -478,6 +511,15 @@ def parse_extern_decl(it):
         yield parse_extern_type_decl(it)
     else:
         raise UnexpectedToken(ty)
+
+
+def parse_type_decl(it):
+    _expect(next(it), T.TYPE)
+    name_tok = _expect(next(it), T.IDENT)
+    _expect(next(it), T.EQ)
+    node = TypeAliasDecl(name_tok.text, parse_type_expr(it))
+    _expect(next(it), T.SEMICOLON)
+    return node
 
 
 Param = namedtuple("Param", "name type")
@@ -728,11 +770,13 @@ def parse_unary_op(it):
         UnaryOp(tok.type)
     except ValueError:
         expr = parse_atom(it)
-        while it.peek().type in (T.LPAREN, T.LBRACKET):
+        while it.peek().type in (T.LPAREN, T.LBRACKET, T.DOT):
             if it.peek().type is T.LPAREN:
                 expr = parse_call_expr(it, expr)
             elif it.peek().type is T.LBRACKET:
                 expr = parse_index_expr(it, expr)
+            elif it.peek().type is T.DOT:
+                expr = parse_dot_expr(it, expr)
         return expr
     else:
         return UnaryExpr(UnaryOp(next(it).type), parse_unary_op(it))
@@ -804,6 +848,12 @@ def parse_index_expr(it, target):
     return IndexExpr(target, index)
 
 
+def parse_dot_expr(it, target):
+    _expect(next(it), T.DOT)
+    member_name = _expect(next(it), T.IDENT).text
+    return DotExpr(target, member_name)
+
+
 def parse_type_expr(it):
     if it.peek().type is T.IDENT:
         return NamedTypeExpr(next(it).text)
@@ -811,6 +861,24 @@ def parse_type_expr(it):
         next(it)
         pointee = parse_type_expr(it)
         return PointerTypeExpr(pointee)
+    elif it.peek().type is T.LBRACE:
+        next(it)
+
+        members = []
+        while it.peek().type is not T.RBRACE:
+            member_name_tok = _expect(next(it), T.IDENT)
+            _expect(next(it), T.COLON)
+            member_type = parse_type_expr(it)
+            members.append((member_name_tok.text, member_type))
+
+            if it.peek().type is T.RBRACE:
+                break
+            else:
+                _expect(next(it), T.COMMA)
+
+        _expect(next(it), T.RBRACE)
+
+        return StructTypeExpr(members)
     else:
         tok = next(it)
         raise UnexpectedToken(tok.pos, tok.text)
